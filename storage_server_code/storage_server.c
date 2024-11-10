@@ -6,14 +6,17 @@
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <netdb.h>
 #include <dirent.h>
 #include <errno.h>
 #include <pthread.h>
+#include <netdb.h>
+#include <json-c/json.h>
+#include <ifaddrs.h>
 
 #define MAX_PATHS 100
 #define MAX_PATH_LENGTH 256
 #define BUFFER_SIZE 1024
+#define MAX_CLIENTS 20
 
 typedef struct {
     int server_id;
@@ -27,15 +30,58 @@ typedef struct {
 typedef struct {
     int socket;
     struct sockaddr_in address;
+    StorageServer* server;  // Added server pointer
 } SocketInfo;
 
+typedef struct {
+    int client_fd;
+    struct sockaddr_in address;
+    StorageServer* server;
+} ClientInfo;
+
+// Global variables for client management
+pthread_t client_threads[MAX_CLIENTS];
+ClientInfo* active_clients[MAX_CLIENTS];
+pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
+int concurrent_clients = 0;
+StorageServer server;
+int client_socket;
 // Function prototypes
 int initialize_socket(int port);
 int connect_to_naming_server(const char* nm_ip, int nm_port);
 void register_with_naming_server(StorageServer* server, int nm_socket);
 void* handle_client_connections(void* arg);
+void* handle_single_client(void* arg);
 int validate_path(const char* path);
 void print_server_info(StorageServer* server);
+void cleanup_client_threads(void);
+char* get_local_ip();
+
+json_object* receive_request(int socket) {
+    uint32_t length;
+    if (recv(socket, &length, sizeof(length), 0) < 0) {
+        return NULL;
+    }
+    length = ntohl(length);
+
+    char* buffer = (char*)malloc(length + 1);
+    int total_received = 0;
+    while (total_received < length) {
+        int received = recv(socket, buffer + total_received, length - total_received, 0);
+        if (received < 0) {
+            free(buffer);
+            return NULL;
+        }
+        total_received += received;
+    }
+    buffer[length] = '\0';
+
+    json_object* request = json_tokener_parse(buffer);
+    free(buffer);
+    return request;
+}
+
+
 
 int main(int argc, char* argv[]) {
     if (argc < 5) {
@@ -43,19 +89,16 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    StorageServer server;
+  
     server.server_id = atoi(argv[1]);
     server.nm_port = atoi(argv[3]);
     server.client_port = atoi(argv[4]);
     server.path_count = 0;
 
-    // Get local IP address
-    char hostname[256];
-    gethostname(hostname, sizeof(hostname));
-    struct hostent* host_entry = gethostbyname(hostname);
-    strcpy(server.ip_address, inet_ntoa(*(struct in_addr*)host_entry->h_addr_list[0]));
+    // get_local_ip
+    strcpy(server.ip_address, get_local_ip());
 
-    // Process accessible paths from command line arguments
+    // Process accessible paths
     for (int i = 5; i < argc && server.path_count < MAX_PATHS; i++) {
         if (validate_path(argv[i])) {
             strncpy(server.accessible_paths[server.path_count], argv[i], MAX_PATH_LENGTH - 1);
@@ -79,17 +122,22 @@ int main(int argc, char* argv[]) {
     register_with_naming_server(&server, nm_socket);
 
     // Initialize client socket
-    int client_socket = initialize_socket(server.client_port);
+    client_socket = initialize_socket(server.client_port);
     if (client_socket < 0) {
         printf("Failed to initialize client socket\n");
         close(nm_socket);
         return 1;
     }
 
+    // Initialize client thread arrays
+    memset(client_threads, 0, sizeof(client_threads));
+    memset(active_clients, 0, sizeof(active_clients));
+
     // Create thread to handle client connections
     pthread_t client_thread;
     SocketInfo client_info = {
-        .socket = client_socket
+        .socket = client_socket,
+        .server = &server
     };
     if (pthread_create(&client_thread, NULL, handle_client_connections, &client_info) != 0) {
         printf("Failed to create client handling thread\n");
@@ -100,20 +148,35 @@ int main(int argc, char* argv[]) {
 
     printf("Storage Server %d initialized and running\n", server.server_id);
 
-    // Main loop to keep the server running
+    // Main loop
     char buffer[BUFFER_SIZE];
     while (1) {
-        // Handle naming server communications
-        int bytes_read = recv(nm_socket, buffer, BUFFER_SIZE - 1, 0);
-        if (bytes_read <= 0) {
-            printf("Connection to naming server lost\n");
-            break;
+        
+
+        json_object* nm_respone = receive_request(nm_socket);
+        if (nm_respone == NULL) {
+            printf("Unsupported Format! Closing client socket!\n");
+            close(client_socket);
+            return NULL;
         }
-        buffer[bytes_read] = '\0';
-        // Handle naming server messages here
+        json_object* status;
+        json_object* ss_id;
+
+        if (json_object_object_get_ex(nm_respone, "status", &status)) {
+            const char* type = json_object_get_string(status);
+            printf("%s\n",type);
+            
+        }
+        if (json_object_object_get_ex(nm_respone, "ss_id", &ss_id)) {
+            const char* type = json_object_get_string(ss_id);
+            printf("%s\n",type);
+        }
+
+
     }
 
     // Cleanup
+    cleanup_client_threads();
     close(nm_socket);
     close(client_socket);
     pthread_cancel(client_thread);
@@ -122,6 +185,133 @@ int main(int argc, char* argv[]) {
     return 0;
 }
 
+void* handle_single_client(void* arg) {
+    ClientInfo* client = (ClientInfo*)arg;
+    char buffer[BUFFER_SIZE];
+    int bytes_read;
+
+    printf("Started handling client: %s:%d\n",
+           inet_ntoa(client->address.sin_addr),
+           ntohs(client->address.sin_port));
+
+    while ((bytes_read = recv(client->client_fd, buffer, BUFFER_SIZE - 1, 0)) >= 0) {
+        if(bytes_read == 0 ){
+            int check_dead = recv(client->client_fd,buffer,1,MSG_PEEK);
+            if(check_dead == 0)break;
+            continue;
+        }
+
+        buffer[bytes_read] = '\0';
+        
+        // Handle client request here
+        printf("Received from client %s:%d: %s\n",
+               inet_ntoa(client->address.sin_addr),
+               ntohs(client->address.sin_port),
+               buffer);
+        
+        // Echo back to client (replace with actual response handling)
+        send(client->client_fd, "Message received\n", 16, 0);
+    }
+
+    printf("Client disconnected: %s:%d\n",
+           inet_ntoa(client->address.sin_addr),
+           ntohs(client->address.sin_port));
+
+    // Cleanup client resources
+    close(client->client_fd);
+    
+    // Remove client from active clients
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (active_clients[i] == client) {
+            active_clients[i] = NULL;
+            break;
+        }
+    }
+    concurrent_clients--;
+    pthread_mutex_unlock(&clients_mutex);
+    
+    free(client);
+    return NULL;
+}
+
+void* handle_client_connections(void* arg) {
+    SocketInfo* info = (SocketInfo*)arg;
+    struct sockaddr_in client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+
+    while (1) {
+        while(concurrent_clients >= MAX_CLIENTS) {
+            usleep(10);  // Sleep for 1ms when max clients reached
+        }
+
+        int client_fd = accept(info->socket, (struct sockaddr*)&client_addr, &addr_len);
+        if (client_fd < 0) {
+            perror("Accept failed");
+            continue;
+        }
+
+        // Create new client info
+        ClientInfo* client = (ClientInfo*)malloc(sizeof(ClientInfo));
+        client->client_fd = client_fd;
+        memcpy(&client->address, &client_addr, sizeof(struct sockaddr_in));
+        client->server = info->server;
+
+        // Find available slot
+        pthread_mutex_lock(&clients_mutex);
+        int slot = -1;
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            if (active_clients[i] == NULL) {
+                slot = i;
+                break;
+            }
+        }
+
+        if (slot == -1) {
+            pthread_mutex_unlock(&clients_mutex);
+            printf("No slots available for new client\n");
+            close(client_fd);
+            free(client);
+            continue;
+        }
+
+        // Create new thread for client
+        if (pthread_create(&client_threads[slot], NULL, handle_single_client, client) != 0) {
+            pthread_mutex_unlock(&clients_mutex);
+            perror("Failed to create client thread");
+            close(client_fd);
+            free(client);
+            continue;
+        }
+
+        active_clients[slot] = client;
+        concurrent_clients++;
+        pthread_mutex_unlock(&clients_mutex);
+
+        printf("New client connected: %s:%d (slot: %d)\n",
+               inet_ntoa(client_addr.sin_addr),
+               ntohs(client_addr.sin_port),
+               slot);
+    }
+
+    return NULL;
+}
+
+void cleanup_client_threads() {
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (active_clients[i] != NULL) {
+            pthread_cancel(client_threads[i]);
+            close(active_clients[i]->client_fd);
+            free(active_clients[i]);
+            active_clients[i] = NULL;
+        }
+    }
+    concurrent_clients = 0;
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+// Your existing functions remain unchanged
 int initialize_socket(int port) {
     int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (sock_fd < 0) {
@@ -176,75 +366,51 @@ int connect_to_naming_server(const char* nm_ip, int nm_port) {
 }
 
 void register_with_naming_server(StorageServer* server, int nm_socket) {
-    // Create registration message in JSON format
-    char registration[BUFFER_SIZE];
-    snprintf(registration, BUFFER_SIZE,
-        "{"
-        "\"server_id\": %d,"
-        "\"ip_address\": \"%s\","
-        "\"nm_port\": %d,"
-        "\"client_port\": %d,"
-        "\"path_count\": %d"
-        "}",
-        server->server_id,
-        server->ip_address,
-        server->nm_port,
-        server->client_port,
-        server->path_count
-    );
+   json_object *request = json_object_new_object();
 
-    send(nm_socket, registration, strlen(registration), 0);
+    // Add the fields to the JSON object
+    json_object_object_add(request, "type", json_object_new_string("storage_server_register"));
+    json_object_object_add(request, "ip", json_object_new_string(server->ip_address));
+    json_object_object_add(request, "nm_port", json_object_new_int(server->nm_port));
+    json_object_object_add(request, "client_port", json_object_new_int(server->client_port));
 
-    // Send paths in separate messages to avoid buffer size issues
+    // Create the "accessible_paths" array and add paths to it
+    json_object *paths_array = json_object_new_array();
     for (int i = 0; i < server->path_count; i++) {
-        char path_msg[MAX_PATH_LENGTH + 50];
-        snprintf(path_msg, sizeof(path_msg),
-            "{\"path_index\": %d, \"path\": \"%s\"}",
-            i, server->accessible_paths[i]
-        );
-        send(nm_socket, path_msg, strlen(path_msg), 0);
+        json_object_array_add(paths_array, json_object_new_string(server->accessible_paths[i]));
     }
-}
+    json_object_object_add(request, "paths", paths_array);
 
-void* handle_client_connections(void* arg) {
-    SocketInfo* info = (SocketInfo*)arg;
-    struct sockaddr_in client_addr;
-    socklen_t addr_len = sizeof(client_addr);
+    // Convert the JSON object to a string for sending
+   
+    // Print the JSON string for debugging
 
-    while (1) {
-        int client_fd = accept(info->socket, (struct sockaddr*)&client_addr, &addr_len);
-        if (client_fd < 0) {
-            perror("Accept failed");
-            continue;
-        }
-
-        printf("New client connected: %s:%d\n", 
-            inet_ntoa(client_addr.sin_addr), 
-            ntohs(client_addr.sin_port));
-
-        // Handle client communication here
-        // You would typically create a new thread for each client
-        close(client_fd);
-    }
-
-    return NULL;
+   
+    const char* registration = json_object_to_json_string(request);
+    printf("%s\n", registration); 
+    uint32_t length = strlen(registration);
+    uint32_t network_length = htonl(length);
+    
+    send(nm_socket, &network_length, sizeof(network_length), 0);
+    send(nm_socket, registration, length, 0);
+    json_object_put(request);
 }
 
 int validate_path(const char* path) {
-    DIR* dir = opendir(path);
-    if (dir) {
-        closedir(dir);
-        return 1;
-    }
+    return 1;
+    // DIR* dir = opendir(path);
+    // if (dir) {
+    //     closedir(dir);
+    //     return 1;
+    // }
 
-    // Check if it's a regular file
-    FILE* file = fopen(path, "r");
-    if (file) {
-        fclose(file);
-        return 1;
-    }
+    // FILE* file = fopen(path, "r");
+    // if (file) {
+    //     fclose(file);
+    //     return 1;
+    // }
 
-    return 0;
+    // return 0;
 }
 
 void print_server_info(StorageServer* server) {
@@ -258,4 +424,44 @@ void print_server_info(StorageServer* server) {
         printf("  %d: %s\n", i + 1, server->accessible_paths[i]);
     }
     printf("\n");
+}
+
+
+char* get_local_ip() {
+    struct ifaddrs *ifaddr, *ifa;
+    static char ip[INET_ADDRSTRLEN];
+    int found = 0;
+
+    // Get list of interfaces
+    if (getifaddrs(&ifaddr) == -1) {
+        perror("getifaddrs");
+        return NULL;
+    }
+
+    // Iterate through interfaces
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL)
+            continue;
+
+        // Only interested in IPv4 addresses
+        if (ifa->ifa_addr->sa_family == AF_INET) {
+            struct sockaddr_in *addr = (struct sockaddr_in *)ifa->ifa_addr;
+            
+            // Skip loopback interface
+            if (strcmp(ifa->ifa_name, "lo") == 0)
+                continue;
+
+            // Convert IP to string
+            inet_ntop(AF_INET, &(addr->sin_addr), ip, INET_ADDRSTRLEN);
+            
+            // Skip local and link-local addresses
+            if (strncmp(ip, "127.", 4) != 0 && strncmp(ip, "169.254.", 8) != 0) {
+                found = 1;
+                break;
+            }
+        }
+    }
+
+    freeifaddrs(ifaddr);
+    return found ? ip : NULL;
 }
