@@ -25,6 +25,8 @@
 #define BASE_DIR "myserver/"
 #define INVALID_PATH 10
 #define MAX_READ 4096
+#define CHUNK_SIZE 2000
+#define DATA_SIZE_TO_SHIFT_WRITE_STYLE 10000
 
 
 
@@ -88,12 +90,13 @@ ssize_t read_file_range(const char* path, char* buffer, size_t buffer_size,off_t
 void stream_to_socket(const char* data, size_t size, void* user_data);
 int stream_audio(const char* path,void (*callback)(const char* data, size_t size, void* user_data),void* user_data) ;
 int get_file_info(const char* path, file_info_t* info);
-int write_file(char* path, char* data, size_t size, int append);
-ssize_t read_file( char* path, char** buffer);
-
+int write_file_for_client(int client_fd , char*path ,int append,char* error,int write_size);
+int write_file_for_client_large(ClientInfo*client , char*path ,int append,char* error,int write_size,int request_id);
+ssize_t read_file_for_client(char*error,int client_fd ,char* path);
+void send_client_work_ack_to_ns(ClientInfo*client,char*type,char*status,char*error,int stop,int request_id);
 int is_within_base_dir(const char *path);
 void send_to_naming_server(json_object*data);
-void send_to_naming_server(json_object*data);
+void send_naming_work_to_ns(char*type,char*status,char*error,int request_id);
 void  terminate_seperate_client_code();
 
 json_object* receive_request(int socket) {
@@ -199,6 +202,7 @@ int main(int argc, char* argv[]) {
 
     // Main loop
     char buffer[BUFFER_SIZE];
+    json_object*request_code_object;
     while (1) {
         
         json_object* nm_response = receive_request(nm_socket);
@@ -207,17 +211,18 @@ int main(int argc, char* argv[]) {
             terminate_seperate_client_code();
             return NULL;
         }
-        json_object*request_code_object;
+        char*error = malloc(sizeof(char)*1000);
+        strcpy(error,"No error");
+        char*path = malloc(sizeof(char)*256);
+        int request_id = -1;
+        json_object*request_id_object;
         if(json_object_object_get_ex(nm_response,"request_code",&request_code_object)){
             char*request_code = json_object_get_string(request_code_object);
             int response_code = 1;
-            char*error = malloc(sizeof(char)*1000);
-            char*path = malloc(sizeof(char)*256);
+            
             if(strcmp("create_empty",request_code) == 0){
-                
                 json_object*path_object;
                 json_object*type_obj;
-                
                
                 bool is_directory; // 1 for directory 0 for file 
                 if(json_object_object_get_ex(nm_response,"path",&path_object)){
@@ -242,24 +247,27 @@ int main(int argc, char* argv[]) {
                     strcpy(error,"not able to extract file type : directory or not");
                     response_code = 0;
                 }
+
+                if(json_object_object_get_ex(nm_response,"request_id",&request_id_object)){
+                    request_id = json_object_get_int(request_id_object);
+                }
+                else{
+                    strcpy(error,"not able to extract request id");
+                    response_code = 0;
+                }
+
                 int res = create_empty(path,is_directory);
                 if(res == -1){
                     response_code = 0;
                     strcpy(error,"path not created : may be server already has the same path");
                 }
                 if(res == 0){
-                    json_object*response = json_object_new_object();
-                    json_object_object_add(response , "status",json_object_new_string("success"));
-                    send_to_naming_server(response);
-                    json_object_put(response);
+                    send_naming_work_to_ns("naming_server_related","success",error,request_id);
 
                 }
                 else if(res == -1){
-                    json_object*response = json_object_new_object();
-                    json_object_object_add(response , "status",json_object_new_string("failure"));
-                    json_object_object_add(response , "error",json_object_new_string(error));
-                    send_to_naming_server(response);
-                    json_object_put(response);
+                    send_naming_work_to_ns("naming_server_related","failure",error,request_id);
+
                 }
                 json_object_put(path_object);
                 json_object_put(type_obj);
@@ -282,23 +290,26 @@ int main(int argc, char* argv[]) {
                     response_code = 0;
                     strcpy(error,"not able to extract path for deletion");
                 }
+
+                if(json_object_object_get_ex(nm_response,"request_id",&request_id_object)){
+                    request_id = json_object_get_int(request_id_object);
+                }
+                else{
+                    strcpy(error,"not able to extract request id");
+                    response_code = 0;
+                }
+
                 int res = delete_path(path);
                 if(res == -1){
                     response_code = 0;
                     strcpy(error,"Not able to delete file ");
                 }
                 if(response_code == 1){
-                    json_object*response = json_object_new_object();
-                    json_object_object_add(response , "status",json_object_new_string("success"));
-                    send_to_naming_server(response);
-                    json_object_put(response);
+                    send_naming_work_to_ns("naming_server_related","success",error,request_id);
+
                 }
                 else {
-                    json_object*response = json_object_new_object();
-                    json_object_object_add(response , "status",json_object_new_string("failure"));
-                    json_object_object_add(response , "error",json_object_new_string(error));
-                    send_to_naming_server(response);
-                    json_object_put(response);
+                    send_naming_work_to_ns("naming_server_related","failure",error,request_id);
                 }
                 json_object_put(path_object);
 
@@ -335,34 +346,39 @@ int main(int argc, char* argv[]) {
                     strcpy(error,"Not able to extract port for storage server");
                 }
 
+                   if(json_object_object_get_ex(nm_response,"request_id",&request_id_object)){
+                    request_id = json_object_get_int(request_id_object);
+                }
+                else{
+                    strcpy(error,"not able to extract request id");
+                    response_code = 0;
+                }
+
                 int res = 1; // implent the code with return succes as  0 and fail as -1
                 if(res == -1){
                     response_code = 0;
                     strcpy(error,"unable to copy from storage server");
                 }
                 if(response_code == 1){
-                    json_object*response = json_object_new_object();
-                    json_object_object_add(response , "status",json_object_new_string("success"));
-                    send_to_naming_server(response);
-                    json_object_put(response);
+                    send_naming_work_to_ns("naming_server_related","success",error,request_id);
+
                 }
                 else {
-                    json_object*response = json_object_new_object();
-                    json_object_object_add(response , "status",json_object_new_string("failure"));
-                    json_object_object_add(response , "error",json_object_new_string(error));
-                    send_to_naming_server(response);
-                    json_object_put(response);
+                    send_naming_work_to_ns("naming_server_related","failure",error,request_id);
                 }
             
                 json_object_put(path_object);
                 json_object_put(storage_ip_object);
                 json_object_put(storage_port_object);
             }
-            free(error);
-            
+          
         }
-        json_object_put(request_code_object);
+        free(error);
+        free(path);
+        json_object_put(request_id_object);
+        
     }
+    json_object_put(request_code_object);
 
     // Cleanup
     cleanup_client_threads();
@@ -379,189 +395,196 @@ void* handle_single_client(void* arg) {
     char buffer[BUFFER_SIZE];
     int bytes_read;
 
-    printf("Started handling client: %s:%d\n",
-           inet_ntoa(client->address.sin_addr),
-           ntohs(client->address.sin_port));
+    printf("Started handling client: %s:%d\n",inet_ntoa(client->address.sin_addr),ntohs(client->address.sin_port));
 
-    while (1) {
-        json_object* client_request = receive_request(client->client_fd);
+    json_object* client_request = receive_request(client->client_fd);
 
-        if(client_request == NULL){
-            printf("Client disconnected: %s:%d\n",inet_ntoa(client->address.sin_addr),ntohs(client->address.sin_port));
-            close(client->client_fd);
-            pthread_mutex_lock(&clients_mutex);
-            for (int i = 0; i < MAX_CLIENTS; i++) {
-                if (active_clients[i] == client) {
-                    active_clients[i] = NULL;
-                    break;
-                }
+    if(client_request == NULL){
+        printf("Client disconnected: %s:%d\n",inet_ntoa(client->address.sin_addr),ntohs(client->address.sin_port));
+        close(client->client_fd);
+        pthread_mutex_lock(&clients_mutex);
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            if (active_clients[i] == client) {
+                active_clients[i] = NULL;
+                break;
             }
-            concurrent_clients--;
-            pthread_mutex_unlock(&clients_mutex);
-            
-            free(client);
-            return NULL;
         }
-
-        json_object*request_code_object;
-        if(json_object_object_get_ex(client_request,"request_code",&request_code_object)){
-            char*request_code = json_object_get_string(request_code_object);
-            int response_code = 1;
-            char*error = malloc(sizeof(char)*1000);
-            char*path = malloc(sizeof(char)*256);
-            if(strcmp("read",request_code) == 0){
-                
-                json_object*path_object;
-                
-                if(json_object_object_get_ex(client_request,"path",&path_object)){
-                    strcpy(path,json_object_get_string(path_object));
-                   
-                    if(!is_path_creatable(path)){
-                        response_code = 0;
-                        strcpy(error,"Invalid path");
-                    }
-                    add_base(&path);
-                    
-                }
-                else{
-                    strcpy(error,"not able to extract path");
-                    response_code = 0;
-                }
-
-                char buffer[MAX_READ];
-                int res = read_file(path,&buffer);
-                if(res == -1){
-                    response_code = 0;
-                    strcpy(error,"not able to read the file : may be file does not exist");
-                }
-                if(res == 0){
-                    json_object*response = json_object_new_object();
-                    json_object_object_add(response , "status",json_object_new_string("success"));
-                    json_object_object_add(response,"data",json_object_new_string(buffer));
-                    send_to_client(response,client->client_fd);
-                    json_object_put(response);
-                }
-                else if(res == -1){
-                    json_object*response = json_object_new_object();
-                    json_object_object_add(response , "status",json_object_new_string("failure"));
-                    json_object_object_add(response , "error",json_object_new_string(error));
-                    send_to_client(response,client->client_fd);
-                    json_object_put(response);
-                }
-                json_object_put(path_object);
-            }
-            else if(strcmp("write",request_code) == 0){
-                json_object*path_object;
-                json_object*data_object;
-                json_object*append_flag_object;
-                bool append_flag=0;
-                char data[MAX_READ];
-                if(json_object_object_get_ex(client_request,"path",&path_object)){
-                    strcpy(path,json_object_get_string(path_object));
-                   
-                    if(!is_path_creatable(path)){
-                        response_code = 0;
-                        strcpy(error,"Invalid path");
-                    }
-                    add_base(&path);
-                }
-                else{
-                    strcpy(error,"not able to extract path");
-                    response_code = 0;
-                }
-                if(json_object_object_get_ex(client_request,"data",&data_object)){
-                    strcpy(data,json_object_get_string(data_object));
-                }
-                else{
-                    strcpy(error,"not able to extract data to write");
-                    response_code = 0;
-                }
-                if(json_object_object_get_ex(client_request,"append_flag",&append_flag_object)){
-                    append_flag = json_object_get_boolean(append_flag_object);
-                }
-                else{
-                    strcpy(error,"not able to extract append_flag");
-                    response_code = 0;
-                }
-
-                int res = write_file(path,data,strlen(data),append_flag);
-                if(res == -1){
-                    response_code = 0;
-                    strcpy(error,"not able to write to the file");
-                }
-                if(res == 0){
-                    json_object*response = json_object_new_object();
-                    json_object_object_add(response , "status",json_object_new_string("success"));
-                    send_to_client(response,client->client_fd);
-                    json_object_put(response);
-                }
-                else if(res == -1){
-                    json_object*response = json_object_new_object();
-                    json_object_object_add(response , "status",json_object_new_string("failure"));
-                    json_object_object_add(response , "error",json_object_new_string(error));
-                    send_to_client(response,client->client_fd);
-                    json_object_put(response);
-                }
-                json_object_put(path_object);
-                json_object_put(append_flag_object);
-                json_object_put(data_object);
-
-            }
-            else if(strcmp("get_file_info",request_code) == 0){
-                json_object*path_object;
-                 
-                strcpy(error,"No error");
-                if(json_object_object_get_ex(client_request,"path",&path_object)){
-                    strcpy(path,json_object_get_string(path_object));
-                }
-                else{
-                    response_code = 0;
-                    strcpy(error,"Not able to extract path for stored file");
-                }
-
-                file_info_t*info_holder = malloc(sizeof(file_info_t));
-                int res = get_file_info(path,info_holder); // implent the code with return succes as  0 and fail as -1
-                if(res == -1){
-                    response_code = 0;
-                    strcpy(error,"unable to fetch file info");
-                }
-                if(response_code == 1){
-                    json_object*response = json_object_new_object();
-                    json_object_object_add(response , "status",json_object_new_string("success"));
-                    json_object *file_info = json_object_new_object();
-                    // Add file size
-                    json_object_object_add(file_info, "size", json_object_new_int64(info_holder->size));
-                    // Add file permissions (in octal)
-                    json_object_object_add(file_info, "permissions", json_object_new_int(info_holder->permissions));
-                    // Add last modified time
-                    char last_modified_str[64];
-                    struct tm *tm_info = localtime(&info_holder->last_modified);
-                    strftime(last_modified_str, sizeof(last_modified_str), "%Y-%m-%d %H:%M:%S", tm_info);
-                    json_object_object_add(file_info, "last_modified", json_object_new_string(last_modified_str));
-                    // Add whether it's a directory or a file
-                    json_object_object_add(file_info, "is_directory", json_object_new_boolean(info_holder->is_directory));
-                    // Add the file info to the response
-                    json_object_object_add(response, "file_info", file_info);
-                    send_to_naming_server(response);
-                    json_object_put(response);
-                    json_object_put(file_info);
-                }
-                else {
-                    json_object*response = json_object_new_object();
-                    json_object_object_add(response , "status",json_object_new_string("failure"));
-                    json_object_object_add(response , "error",json_object_new_string(error));
-                    send_to_naming_server(response);
-                    json_object_put(response);
-                }
-                json_object_put(path_object);
-            }
-            free(error);
-            
-        }
-        json_object_put(request_code_object);
+        concurrent_clients--;
+        pthread_mutex_unlock(&clients_mutex);
         
-        
+        free(client);
+        return NULL;
     }
+
+    json_object*request_code_object;
+    if(json_object_object_get_ex(client_request,"request_code",&request_code_object)){
+        char*request_code = json_object_get_string(request_code_object);
+        int response_code = 1;
+        char*error = malloc(sizeof(char)*1000);
+        strcpy(error,"No Error");
+        char*path = malloc(sizeof(char)*256);
+        if(strcmp("read",request_code) == 0){
+            
+            json_object*path_object;
+            
+            if(json_object_object_get_ex(client_request,"path",&path_object)){
+                strcpy(path,json_object_get_string(path_object));
+                
+                if(!is_path_creatable(path)){
+                    response_code = 0;
+                    strcpy(error,"Invalid path");
+                }
+                add_base(&path);
+                
+            }
+            else{
+                strcpy(error,"not able to extract path");
+                response_code = 0;
+            }
+
+            
+            int res =-1;
+            if(response_code == 1){
+                res = read_file_for_client(error,client->client_fd,path);
+            }
+            else{
+                json_object*response = json_object_new_object();
+                json_object_object_add(response , "status",json_object_new_string("failure"));
+                json_object_object_add(response , "error",json_object_new_string(error));
+                json_object_object_add(response , "stop",json_object_new_string(1));
+                send_to_client(response,client->client_fd);
+                json_object_put(response);
+            }
+            json_object_put(path_object);
+        }
+        else if(strcmp("write",request_code) == 0){
+            json_object*path_object;
+            json_object*data_object;
+            json_object*append_flag_object;
+            json_object*write_size_object;
+            json_object*request_id_object;
+            int request_id;
+            int write_size = 0;
+            bool append_flag=0;
+            
+            if(json_object_object_get_ex(client_request,"path",&path_object)){
+                strcpy(path,json_object_get_string(path_object));
+                
+                if(!is_path_creatable(path)){
+                    response_code = 0;
+                    strcpy(error,"Invalid path");
+                }
+                add_base(&path);
+            }
+            else{
+                strcpy(error,"not able to extract path");
+                response_code = 0;
+            }
+            if(json_object_object_get_ex(client_request,"append_flag",&append_flag_object)){
+                append_flag = json_object_get_boolean(append_flag_object);
+            }
+            else{
+                strcpy(error,"not able to extract append_flag");
+                response_code = 0;
+            }
+            if(json_object_object_get_ex(client_request,"write_size",&write_size_object)){
+                write_size = json_object_get_int(write_size_object);
+            }
+            else{
+                strcpy(error,"not able to extract write size");
+                response_code = 0;
+            }
+            if(json_object_object_get_ex(client_request,"request_id",&request_id_object)){
+                request_id = json_object_get_int(request_id_object);
+            }
+            else{
+                strcpy(error,"not able to extract request id");
+                response_code = 0;
+            }
+
+            int res = -1;
+            if( response_code == 0){
+                json_object*response = json_object_new_object();
+                json_object_object_add(response , "status",json_object_new_string("failure"));
+                json_object_object_add(response , "error",json_object_new_string(error));
+                json_object_object_add(response , "stop",json_object_new_int(1));
+                send_to_client(response,client->client_fd);
+                json_object_put(response);
+            }
+            else{
+               if(write_size > DATA_SIZE_TO_SHIFT_WRITE_STYLE){
+                    json_object*response = json_object_new_object();
+                    json_object_object_add(response , "status",json_object_new_string("pending"));
+                    json_object_object_add(response , "stop",json_object_new_int(1));
+                    send_to_client(response,client->client_fd);
+                    json_object_put(response);
+                    res =  write_file_for_client_large(client->client_fd,path,append_flag,error,write_size,request_id);
+               }
+               else res = write_file_for_client(client->client_fd,path,append_flag,error,write_size);
+            }
+            
+            json_object_put(path_object);
+            json_object_put(append_flag_object);
+            json_object_put(data_object);
+
+        }
+        else if(strcmp("get_file_info",request_code) == 0){
+            json_object*path_object;
+                
+            strcpy(error,"No error");
+            if(json_object_object_get_ex(client_request,"path",&path_object)){
+                strcpy(path,json_object_get_string(path_object));
+            }
+            else{
+                response_code = 0;
+                strcpy(error,"Not able to extract path for stored file");
+            }
+
+            file_info_t*info_holder = malloc(sizeof(file_info_t));
+            int res = get_file_info(path,info_holder); // implent the code with return succes as  0 and fail as -1
+            if(res == -1){
+                response_code = 0;
+                strcpy(error,"unable to fetch file info");
+            }
+            if(response_code == 1){
+                json_object*response = json_object_new_object();
+                json_object_object_add(response , "status",json_object_new_string("success"));
+                json_object *file_info = json_object_new_object();
+                // Add file size
+                json_object_object_add(file_info, "size", json_object_new_int64(info_holder->size));
+                // Add file permissions (in octal)
+                json_object_object_add(file_info, "permissions", json_object_new_int(info_holder->permissions));
+                // Add last modified time
+                char last_modified_str[64];
+                struct tm *tm_info = localtime(&info_holder->last_modified);
+                strftime(last_modified_str, sizeof(last_modified_str), "%Y-%m-%d %H:%M:%S", tm_info);
+                json_object_object_add(file_info, "last_modified", json_object_new_string(last_modified_str));
+                // Add whether it's a directory or a file
+                json_object_object_add(file_info, "is_directory", json_object_new_boolean(info_holder->is_directory));
+                // Add the file info to the response
+                json_object_object_add(response, "file_info", file_info);
+                json_object_object_add(response,"stop",json_object_new_int(1));
+                send_to_naming_server(response);
+                json_object_put(response);
+                json_object_put(file_info);
+            }
+            else {
+                json_object*response = json_object_new_object();
+                json_object_object_add(response , "status",json_object_new_string("failure"));
+                json_object_object_add(response , "error",json_object_new_string(error));
+                send_to_naming_server(response);
+                json_object_put(response);
+            }
+            json_object_put(path_object);
+        }
+        else if(strcmp("stream_audio_files",request_code) == 0 ){
+            
+        }
+        free(error);
+
+    }
+    json_object_put(request_code_object);
+    
 
     printf("Client disconnected: %s:%d\n",inet_ntoa(client->address.sin_addr),ntohs(client->address.sin_port));
 
@@ -962,7 +985,9 @@ int copy_path(const char* source_path, const char* dest_path) {
 // Read entire file content into a buffer
 // Returns: -1 on error, file size on success
 // buffer is allocated by the function and must be freed by caller
-ssize_t read_file(char* path, char** buffer) {
+ssize_t read_file_for_client(char*error,int client_fd,char* path) {
+    char buffer[MAX_READ];
+    char error;
     FILE* file = fopen(path, "rb");
     if (file == NULL) {
         return -1;
@@ -975,42 +1000,286 @@ ssize_t read_file(char* path, char** buffer) {
 
     if (file_size < 0) {
         fclose(file);
+        strcpy(error,"unable to get file size ");
+        json_object*response = json_object_new_object();
+        json_object_object_add(response , "status",json_object_new_string("failure"));
+        json_object_object_add(response , "error",json_object_new_string(error));
+        json_object_object_add(response , "stop",json_object_new_string(1));
+        send_to_client(response,client_fd);
+        json_object_put(response);
         return -1;
     }
-
-    // Allocate buffer
-    *buffer = (char*)malloc(file_size + 1);
-    if (*buffer == NULL) {
+    
+    int bytes_read =0;
+    int chunk_size =0;
+    while( ( chunk_size = fread(buffer,1,CHUNK_SIZE,file)) > 0){
+        bytes_read+=chunk_size;
+        buffer[chunk_size] = '\0';
+        json_object*response = json_object_new_object();
+        json_object_object_add(response , "status",json_object_new_string("success"));
+        json_object_object_add(response,"data",json_object_new_string(buffer));
+        json_object_object_add(response,"stop",json_object_new_string(0));
+        json_object_object_add(response,"chunk_size",json_object_new_int(chunk_size));
+        send_to_client(response,client_fd);
+        json_object_put(response);
+    }
+    
+    if (ferror(file)) {
         fclose(file);
+        strcpy(error,"something wrong occurred while reading file");
+        json_object*response = json_object_new_object();
+        json_object_object_add(response , "status",json_object_new_string("failure"));
+        json_object_object_add(response , "error",json_object_new_string(error));
+        json_object_object_add(response , "stop",json_object_new_string(1));
+        send_to_client(response,client_fd);
+        json_object_put(response);
         return -1;
     }
-
-    // Read file content
-    size_t bytes_read = fread(*buffer, 1, file_size, file);
-    fclose(file);
 
     if (bytes_read != file_size) {
-        free(*buffer);
-        *buffer = NULL;
+        fclose(file);
+        strcpy(error,"unable to read the file completely");
+        json_object*response = json_object_new_object();
+        json_object_object_add(response , "status",json_object_new_string("failure"));
+        json_object_object_add(response , "error",json_object_new_string(error));
+        json_object_object_add(response , "stop",json_object_new_string(1));
+        send_to_client(response,client_fd);
+        json_object_put(response);
         return -1;
     }
 
-    (*buffer)[file_size] = '\0';  // Null terminate if it's text
+    json_object*response = json_object_new_object();
+    json_object_object_add(response , "status",json_object_new_string("success"));
+    json_object_object_add(response,"stop",json_object_new_string(0));
+    send_to_client(response,client_fd);
+    json_object_put(response);
+    
+    fclose(file);
+
+    // Null terminate if it's text
     return file_size;
 }
 
 // Write data to file
 // Returns: -1 on error, 0 on success
-int write_file(char* path, char* data, size_t size, int append) {
+int write_file_for_client(int client_fd , char*path ,int append,char* error,int write_size) {
     FILE* file = fopen(path, append ? "ab" : "wb");
     if (file == NULL) {
+        strcpy(error,"unabe to open file");
+        json_object*response = json_object_new_object();
+        json_object_object_add(response , "status",json_object_new_string("failure"));
+        json_object_object_add(response , "error",json_object_new_string(error));
+        json_object_object_add(response , "stop",json_object_new_int(1));
+        send_to_client(response,client_fd);
+        json_object_put(response);
         return -1;
     }
 
-    size_t bytes_written = fwrite(data, 1, size, file);
+    json_object*response = json_object_new_object();
+    json_object_object_add(response , "status",json_object_new_string("success"));
+    json_object_object_add(response , "stop",json_object_new_int(0));
+    send_to_client(response,client_fd);
+    json_object_put(response);
+
+    json_object*stop_object;
+    json_object*data_object;
+    json_object*chunk_size_object;
+    int total_bytes_written =0;
+    while(1){
+        json_object*client_request = receive_request(client_fd);
+        if(client_request == NULL){
+            fclose(file);
+            return -1;
+        }
+        char data[4096];
+        int chunk_size;
+        int stop;
+        int response_code =1;
+        
+        if(json_object_object_get_ex(client_request,"stop",&stop_object)){
+            stop = json_object_get_int(&stop_object);
+        }
+        else{
+            strcpy(error ,"please send stop signal with the data packet");
+            json_object*response = json_object_new_object();
+            json_object_object_add(response , "status",json_object_new_string("failure"));
+            json_object_object_add(response , "error",json_object_new_string(error));
+            json_object_object_add(response , "stop",json_object_new_int(1));
+            send_to_client(response,client_fd);
+            json_object_put(response);
+            break;
+        }
+
+        if(stop == 1)break;
+
+        if(json_object_object_get_ex(client_request,"chunk_size",&chunk_size_object)){
+            chunk_size =json_object_get_int(&chunk_size_object);
+        }
+        else{
+            strcpy(error ,"please send chunnk size with the data packet");
+            json_object*response = json_object_new_object();
+            json_object_object_add(response , "status",json_object_new_string("failure"));
+            json_object_object_add(response , "error",json_object_new_string(error));
+            json_object_object_add(response , "stop",json_object_new_int(1));
+            send_to_client(response,client_fd);
+            json_object_put(response);
+            break;
+        }
+
+      
+        if(json_object_object_get_ex(client_request,"data",&data_object)){
+            strcpy(data,json_object_get_string(&data_object));
+        }
+        else{
+            strcpy(error ,"please send chunk size with the data packet");
+            json_object*response = json_object_new_object();
+            json_object_object_add(response , "status",json_object_new_string("failure"));
+            json_object_object_add(response , "error",json_object_new_string(error));
+            json_object_object_add(response , "stop",json_object_new_int(1));
+            send_to_client(response,client_fd);
+            json_object_put(response);
+            break;
+        }
+
+        if(chunk_size > CHUNK_SIZE || strlen(data) != chunk_size){
+            if(chunk_size != strlen(data) ){
+                strcpy(error,"chunk size does not matches length of the data");
+            }
+            else strcpy(error ,"chunk size cannot exceed 2000");
+            json_object*response = json_object_new_object();
+            json_object_object_add(response , "status",json_object_new_string("failure"));
+            json_object_object_add(response , "error",json_object_new_string(error));
+            json_object_object_add(response , "stop",json_object_new_int(1));
+            send_to_client(response,client_fd);
+            json_object_put(response);
+            break;
+        }
+
+
+        int bytes_written = fwrite(data,1,chunk_size,file);
+
+        if(bytes_written != chunk_size){
+            strcpy(error,"some error occurred while writing to the file");
+            json_object*response = json_object_new_object();
+            json_object_object_add(response , "status",json_object_new_string("failure"));
+            json_object_object_add(response , "error",json_object_new_string(error));
+            json_object_object_add(response , "stop",json_object_new_int(1));
+            send_to_client(response,client_fd);
+            json_object_put(response);
+            break;
+        }
+        total_bytes_written+=bytes_written;
+        
+    }
+    json_object_put(&stop_object);
+    json_object_put(&data_object);
+    json_object_put(&chunk_size_object);
+
+    json_object*response = json_object_new_object();
+    json_object_object_add(response , "status",json_object_new_string("success"));
+    json_object_object_add(response , "stop",json_object_new_int(1));
+    json_object_object_add(response, "total_bytes_written",json_object_new_int(total_bytes_written));
+    send_to_client(response,client_fd);
+    json_object_put(response);
     fclose(file);
 
-    return (bytes_written == size) ? 0 : -1;
+    return 1;
+}
+
+int write_file_for_client_large(ClientInfo*client , char*path ,int append,char* error,int write_size,int request_id){
+    int client_fd = client->client_fd;
+    FILE* file = fopen(path, append ? "ab" : "wb");
+    if (file == NULL) {
+        strcpy(error,"unabe to open file");
+        send_client_work_ack_to_ns(client,"client_related","failure",error,1,request_id);
+        return -1;
+    }
+
+    json_object*stop_object;
+    json_object*data_object;
+    json_object*chunk_size_object;
+    int total_bytes_written =0;
+    int actual_total_bytes_written=0;
+    char large_data[1000000];
+    char data[4096];
+    while(1){
+        json_object*client_request = receive_request(client_fd);
+        if(client_request == NULL){
+            fclose(file);
+            return -1;
+        }
+        
+        int chunk_size;
+        int stop;
+        int response_code =1;
+        
+        if(json_object_object_get_ex(client_request,"stop",&stop_object)){
+            stop = json_object_get_int(&stop_object);
+        }
+        else{
+            strcpy(error ,"please send stop signal with the data packet");
+            send_client_work_ack_to_ns(client,"client_related","failure",error,1,request_id);
+
+            break;
+        }
+
+        if(stop == 1)break;
+
+        if(json_object_object_get_ex(client_request,"chunk_size",&chunk_size_object)){
+            chunk_size =json_object_get_int(&chunk_size_object);
+        }
+        else{
+            strcpy(error ,"please send chunk size with the data packet");
+            send_client_work_ack_to_ns(client,"client_related","failure",error,1,request_id);
+            break;
+        }
+
+      
+        if(json_object_object_get_ex(client_request,"data",&data_object)){
+            strcpy(data,json_object_get_string(&data_object));
+        }
+        else{
+            strcpy(error ,"please send chunk size with the data packet");
+            send_client_work_ack_to_ns(client,"client_related","failure",error,1,request_id);
+            break;
+        }
+
+        if(chunk_size > CHUNK_SIZE || strlen(data) != chunk_size){
+            if(chunk_size != strlen(data) ){
+                strcpy(error,"chunk size does not matches length of the data");
+            }
+            else strcpy(error ,"chunk size cannot exceed 2000");
+            
+            send_client_work_ack_to_ns(client,"client_related","failure",error,1,request_id);
+            break;
+        }
+
+
+        strcat(large_data,data);
+        total_bytes_written+=strlen(data);
+        actual_total_bytes_written+=strlen(data);
+
+        if(total_bytes_written > 1000000 - 10000){
+            fwrite(large_data,1,total_bytes_written,file);
+            total_bytes_written=0;
+            large_data[0]='\0';
+        }
+       
+    }
+
+    if(total_bytes_written > 0 ) fwrite(large_data,1,total_bytes_written,file);
+
+
+    send_client_work_ack_to_ns(client,"client_related","success",error,1,request_id);
+  
+    json_object_put(&stop_object);
+    json_object_put(&data_object);
+    json_object_put(&chunk_size_object);
+
+    
+    fclose(file);
+
+    return 1;
 }
 
 // Returns: -1 on error, 0 on success
@@ -1032,29 +1301,29 @@ int get_file_info(const char* path, file_info_t* info) {
 // Stream audio file in chunks
 // callback is called for each chunk of data read
 // Returns: -1 on error, 0 on success
-int stream_audio(const char* path, void (*callback)(const char* data, size_t size, void* user_data),void* user_data) {
-    FILE* file = fopen(path, "rb");
-    if (file == NULL) {
-        return -1;
-    }
+// int stream_audio(const char* path, void (*callback)(const char* data, size_t size, void* user_data),void* user_data) {
+//     FILE* file = fopen(path, "rb");
+//     if (file == NULL) {
+//         return -1;
+//     }
 
-    // Use a reasonable buffer size for streaming (e.g., 64KB)
-    const size_t CHUNK_SIZE = 64 * 1024;
-    char* buffer = (char*)malloc(CHUNK_SIZE);
-    if (buffer == NULL) {
-        fclose(file);
-        return -1;
-    }
+//     // Use a reasonable buffer size for streaming (e.g., 64KB)
+//     const size_t CHUNK_SIZE = 64 * 1024;
+//     char* buffer = (char*)malloc(CHUNK_SIZE);
+//     if (buffer == NULL) {
+//         fclose(file);
+//         return -1;
+//     }
 
-    size_t bytes_read;
-    while ((bytes_read = fread(buffer, 1, CHUNK_SIZE, file)) > 0) {
-        callback(buffer, bytes_read, user_data);
-    }
+//     size_t bytes_read;
+//     while ((bytes_read = fread(buffer, 1, CHUNK_SIZE, file)) > 0) {
+//         callback(buffer, bytes_read, user_data);
+//     }
 
-    free(buffer);
-    fclose(file);
-    return 0;
-}
+//     free(buffer);
+//     fclose(file);
+//     return 0;
+// }
 
 // Example callback function for streaming to a socket
 void stream_to_socket(const char* data, size_t size, void* user_data) {
@@ -1138,4 +1407,27 @@ void  terminate_seperate_client_code(){
     close(client_socket);
     pthread_cancel(client_thread);
 
+}
+
+void send_client_work_ack_to_ns(ClientInfo*client,char*type,char*status,char*error,int stop,int request_id){
+    json_object*response = json_object_new_object();
+    json_object_object_add(response , "type",json_object_new_string("client_related"));
+    json_object_object_add(response,"client_ip",json_object_new_string(inet_ntoa(client->address.sin_addr)));
+    json_object_object_add(response,"client_port",json_object_new_int((int)ntohs(client->address.sin_port)));
+    json_object_object_add(response,"client_request_id",json_object_new_int(request_id));
+    json_object_object_add(response , "status",json_object_new_string("success"));
+    json_object_object_add(response , "error",json_object_new_string(error));
+    json_object_object_add(response , "stop",json_object_new_int(1));
+    send_to_naming_server(response);
+    json_object_put(response);
+}
+
+void send_naming_work_to_ns(char*type,char*status,char*error,int request_id){
+    json_object*response = json_object_new_object();
+    json_object_object_add(response , "type",json_object_new_string(type));
+    json_object_object_add(response , "status",json_object_new_string(status));
+    json_object_object_add(response , "error",json_object_new_string(error));
+    if(request_id > 0)json_object_object_add(response , "request_id",json_object_new_int(request_id));
+    send_to_naming_server(response);
+    json_object_put(response);
 }
