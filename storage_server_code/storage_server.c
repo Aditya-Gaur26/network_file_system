@@ -101,7 +101,7 @@ void  terminate_seperate_client_code();
 void send_to_client(json_object*data,int client_fd);
 bool is_audio_file(const char* path);
 void base64_encode(const unsigned char* input, size_t input_len, char* output, size_t* output_len);
-
+int copy_from_another_storage_server(char*storage,int storage_port,char*path,char*destination_path);
 json_object* receive_request(int socket) {
     uint32_t length;
     if (recv(socket, &length, sizeof(length), 0) < 0) {
@@ -315,9 +315,10 @@ int main(int argc, char* argv[]) {
                 json_object*path_object;
                 json_object*storage_ip_object;
                 json_object*storage_port_object;
-                
-                char*storage_ip;
+                json_object*destination_path_object;
+                char*storage_ip = malloc(sizeof(char)*40);
                 int storage_port;
+                char*destination_path = malloc(sizeof(char)*256);
                 
                 strcpy(error,"No error");
                 if(json_object_object_get_ex(nm_response,"storage_path",&path_object)){
@@ -326,7 +327,7 @@ int main(int argc, char* argv[]) {
                 else{
                     response_code = 0;
                     strcpy(error,"Not able to extract path for stored file");
-                }
+                }   
 
                 if(json_object_object_get_ex(nm_response,"storage_ip",&storage_ip_object)){
                     strcpy(storage_ip,json_object_get_string(storage_ip_object));
@@ -342,8 +343,16 @@ int main(int argc, char* argv[]) {
                     response_code = 0;
                     strcpy(error,"Not able to extract port for storage server");
                 }
+                if(json_object_object_get_ex(nm_response,"destination_path",&destination_path_object)){
+                    strcpy(destination_path,json_object_get_string(destination_path_object));
+                    if(!validate_path(destination_path)){
+                        strcpy(error,"destination path not valid");
+                        response_code =0;
+                    }
+                    add_base(&path);
+                }
 
-                   if(json_object_object_get_ex(nm_response,"request_id",&request_id_object)){
+                if(json_object_object_get_ex(nm_response,"request_id",&request_id_object)){
                     request_id = json_object_get_int(request_id_object);
                 }
                 else{
@@ -351,7 +360,7 @@ int main(int argc, char* argv[]) {
                     response_code = 0;
                 }
 
-                int res = 1; // implent the code with return succes as  0 and fail as -1
+                int res = copy_from_another_storage_server(storage_ip,storage_port,path,destination_path);
                 if(res == -1){
                     response_code = 0;
                     strcpy(error,"unable to copy from storage server");
@@ -367,6 +376,10 @@ int main(int argc, char* argv[]) {
                 json_object_put(path_object);
                 json_object_put(storage_ip_object);
                 json_object_put(storage_port_object);
+                json_object_put(destination_path_object);
+
+                free(storage_ip);
+                free(destination_path);
             }
           
         }
@@ -426,7 +439,6 @@ void* handle_single_client(void* arg) {
             
             if(json_object_object_get_ex(client_request,"path",&path_object)){
                 strcpy(path,json_object_get_string(path_object));
-                
                 if(!validate_path(path)){
                     response_code = 0;
                     strcpy(error,"Invalid path");
@@ -460,12 +472,15 @@ void* handle_single_client(void* arg) {
             json_object*append_flag_object;
             json_object*write_size_object;
             json_object*request_id_object;
+            json_object*sync_object;
+            int sync;
             int request_id;
             int write_size = 0;
             bool append_flag=0;
             
             if(json_object_object_get_ex(client_request,"path",&path_object)){
-                strcpy(path,json_object_get_string(path_object));
+                strncpy(path, json_object_get_string(path_object), 255);
+                path[255] = '\0'; // Null-terminate explicitly
                 
                 if(!validate_path(path)){
                     response_code = 0;
@@ -478,7 +493,7 @@ void* handle_single_client(void* arg) {
                 response_code = 0;
             }
             if(json_object_object_get_ex(client_request,"append_flag",&append_flag_object)){
-                append_flag = json_object_get_boolean(append_flag_object);
+                append_flag = json_object_get_int(append_flag_object);
             }
             else{
                 strcpy(error,"not able to extract append_flag");
@@ -498,6 +513,13 @@ void* handle_single_client(void* arg) {
                 strcpy(error,"not able to extract request id");
                 response_code = 0;
             }
+            if(json_object_object_get_ex(client_request,"sync",&sync_object)){
+                sync = json_object_get_int(sync_object);
+            }
+            else{
+                strcpy(error,"not able to extract sync flag");
+                response_code=0;
+            }
 
             int res = -1;
             if( response_code == 0){
@@ -509,20 +531,25 @@ void* handle_single_client(void* arg) {
                 json_object_put(response);
             }
             else{
-               if(write_size > DATA_SIZE_TO_SHIFT_WRITE_STYLE){
+               if(write_size > DATA_SIZE_TO_SHIFT_WRITE_STYLE && !sync ){
                     json_object*response = json_object_new_object();
                     json_object_object_add(response , "status",json_object_new_string("pending"));
                     json_object_object_add(response , "stop",json_object_new_int(1));
                     send_to_client(response,client->client_fd);
                     json_object_put(response);
-                    res =  write_file_for_client_large(client,path,append_flag,error,write_size,request_id);
-               }
+                    res = write_file_for_client_large(client,path,append_flag,error,write_size,request_id);
+                }
                else res = write_file_for_client(client->client_fd,path,append_flag,error,write_size);
             }
-            
-            json_object_put(path_object);
-            json_object_put(append_flag_object);
-            json_object_put(data_object);
+          
+            if (path_object) json_object_put(path_object);
+            if (append_flag_object) json_object_put(append_flag_object);
+            if (data_object) json_object_put(data_object);
+            if (sync_object) json_object_put(sync_object);
+            if (request_id_object) json_object_put(request_id_object);
+            if (write_size_object) json_object_put(write_size_object);
+
+           
 
         }
         else if(strcmp("get_file_info",request_code) == 0){
@@ -566,7 +593,7 @@ void* handle_single_client(void* arg) {
                 // Add the file info to the response
                 json_object_object_add(response, "file_info", file_info);
                 json_object_object_add(response,"stop",json_object_new_int(1));
-                send_to_naming_server(response);
+                send_to_client(response,client->client_fd);
                 json_object_put(response);
                 json_object_put(file_info);
             }
@@ -574,7 +601,7 @@ void* handle_single_client(void* arg) {
                 json_object*response = json_object_new_object();
                 json_object_object_add(response , "status",json_object_new_string("failure"));
                 json_object_object_add(response , "error",json_object_new_string(error));
-                send_to_naming_server(response);
+                send_to_client(response,client->client_fd);
                 json_object_put(response);
             }
             json_object_put(path_object);
@@ -688,13 +715,13 @@ void* handle_single_client(void* arg) {
 
     }
     json_object_put(request_code_object);
-    
 
+       
     printf("Client disconnected: %s:%d\n",inet_ntoa(client->address.sin_addr),ntohs(client->address.sin_port));
+        
 
     // Cleanup client resources
     close(client->client_fd);
-    
     // Remove client from active clients
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < MAX_CLIENTS; i++) {
@@ -707,6 +734,7 @@ void* handle_single_client(void* arg) {
     pthread_mutex_unlock(&clients_mutex);
     
     free(client);
+   
     return NULL;
 }
 
@@ -720,11 +748,13 @@ void* handle_client_connections(void* arg) {
             usleep(10);  // Sleep for 0.01ms when max clients reached
         }
 
+       
         int client_fd = accept(info->socket, (struct sockaddr*)&client_addr, &addr_len);
         if (client_fd < 0) {
             perror("Accept failed");
             continue;
         }
+       
 
         // Create new client info
         ClientInfo* client = (ClientInfo*)malloc(sizeof(ClientInfo));
@@ -839,6 +869,7 @@ int connect_to_naming_server(const char* nm_ip, int nm_port) {
         close(sock_fd);
         return -1;
     }
+    printf("%d\n",sock_fd);
 
     return sock_fd;
 }
@@ -1101,6 +1132,7 @@ ssize_t read_file_for_client(char*error,int client_fd,char* path) {
     ssize_t file_size = ftell(file);
     fseek(file, 0, SEEK_SET);
 
+    printf("1\n");
     if (file_size < 0) {
         fclose(file);
         strcpy(error,"unable to get file size ");
@@ -1112,7 +1144,7 @@ ssize_t read_file_for_client(char*error,int client_fd,char* path) {
         json_object_put(response);
         return -1;
     }
-    
+    printf("2\n");
     int bytes_read =0;
     int chunk_size =0;
     while( ( chunk_size = fread(buffer,1,CHUNK_SIZE,file)) > 0){
@@ -1121,11 +1153,12 @@ ssize_t read_file_for_client(char*error,int client_fd,char* path) {
         json_object*response = json_object_new_object();
         json_object_object_add(response , "status",json_object_new_string("success"));
         json_object_object_add(response,"data",json_object_new_string(buffer));
-        json_object_object_add(response,"stop",json_object_new_string(0));
+        json_object_object_add(response,"stop",json_object_new_int(0));
         json_object_object_add(response,"chunk_size",json_object_new_int(chunk_size));
         send_to_client(response,client_fd);
         json_object_put(response);
     }
+    printf("3\n");
     
     if (ferror(file)) {
         fclose(file);
@@ -1139,6 +1172,7 @@ ssize_t read_file_for_client(char*error,int client_fd,char* path) {
         return -1;
     }
 
+    printf("4\n");
     if (bytes_read != file_size) {
         fclose(file);
         strcpy(error,"unable to read the file completely");
@@ -1150,15 +1184,17 @@ ssize_t read_file_for_client(char*error,int client_fd,char* path) {
         json_object_put(response);
         return -1;
     }
+    printf("5\n");
 
     json_object*response = json_object_new_object();
     json_object_object_add(response , "status",json_object_new_string("success"));
-    json_object_object_add(response,"stop",json_object_new_int(0));
+    json_object_object_add(response,"stop",json_object_new_int(1));
     send_to_client(response,client_fd);
     json_object_put(response);
     
     fclose(file);
 
+ 
     // Null terminate if it's text
     return file_size;
 }
@@ -1281,19 +1317,24 @@ int write_file_for_client(int client_fd , char*path ,int append,char* error,int 
         total_bytes_written+=bytes_written;
         
     }
+
+  
     json_object_put(stop_object);
     json_object_put(data_object);
     json_object_put(chunk_size_object);
 
     if(response_code == 0){
+        fclose(file);
         return -1;
     }
+    else{
+        json_object_object_add(response , "status",json_object_new_string("success"));
+        json_object_object_add(response , "stop",json_object_new_int(1));
+        json_object_object_add(response, "total_bytes_written",json_object_new_int(total_bytes_written));
+        send_to_client(response,client_fd);
+        json_object_put(response);
+    }
 
-    json_object_object_add(response , "status",json_object_new_string("success"));
-    json_object_object_add(response , "stop",json_object_new_int(1));
-    json_object_object_add(response, "total_bytes_written",json_object_new_int(total_bytes_written));
-    send_to_client(response,client_fd);
-    json_object_put(response);
     fclose(file);
 
     return 1;
@@ -1528,7 +1569,7 @@ void send_client_work_ack_to_ns(ClientInfo*client,char*type,char*status,char*err
     json_object_object_add(response,"client_ip",json_object_new_string(inet_ntoa(client->address.sin_addr)));
     json_object_object_add(response,"client_port",json_object_new_int((int)ntohs(client->address.sin_port)));
     json_object_object_add(response,"client_request_id",json_object_new_int(request_id));
-    json_object_object_add(response , "status",json_object_new_string("success"));
+    json_object_object_add(response , "status",json_object_new_string(status));
     json_object_object_add(response , "error",json_object_new_string(error));
     json_object_object_add(response , "stop",json_object_new_int(1));
     send_to_naming_server(response);
@@ -1627,4 +1668,111 @@ void base64_encode(const unsigned char* input, size_t input_len, char* output, s
     if(output_len != NULL) {
         *output_len = j;
     }
+}
+
+int copy_from_another_storage_server(char*storage_ip,int storage_port,char*path,char*destination_path){
+
+    int sock_fd, bytes_received, total_bytes = 0;
+    struct sockaddr_in server_addr;
+    char buffer[BUFFER_SIZE];
+    FILE* dest_file = NULL;
+    
+    // Create socket
+    sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock_fd < 0) {
+        return -1;
+    }
+    
+    // Set up server address structure
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(storage_port);
+    if (inet_pton(AF_INET, storage_ip, &server_addr.sin_addr) <= 0) {
+        close(sock_fd);
+        return -1;
+    }
+    
+    // Connect to server
+    if (connect(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        close(sock_fd);
+        return -1;
+    }
+    
+    // Create read request JSON
+    json_object* request = json_object_new_object();
+    json_object_object_add(request, "request_code", json_object_new_string("read"));
+    json_object_object_add(request, "path", json_object_new_string(path));
+    
+    // Send request
+    const char* request_str = json_object_to_json_string(request);
+    if (send(sock_fd, request_str, strlen(request_str), 0) < 0) {
+        json_object_put(request);
+        close(sock_fd);
+        return -1;
+    }
+    json_object_put(request);
+    
+    // Create destination file
+    dest_file = fopen(destination_path, "wb");
+    if (!dest_file) {
+        close(sock_fd);
+        return -1;
+    }
+    
+    // Process response and copy data
+    while (1) {
+        // Receive response
+        bytes_received = recv(sock_fd, buffer, BUFFER_SIZE - 1, 0);
+        
+        if (bytes_received < 0) {
+            if (errno == EINTR) continue;  // Interrupted, retry
+            fclose(dest_file);
+            close(sock_fd);
+            return -1;
+        }
+        
+        if (bytes_received == 0) {  // Connection closed
+            break;
+        }
+        
+        buffer[bytes_received] = '\0';
+        
+        // Try to parse as JSON to check for response status
+        json_object* response = json_tokener_parse(buffer);
+        if (response) {
+            json_object* status_obj;
+            if (json_object_object_get_ex(response, "status", &status_obj)) {
+                const char* status = json_object_get_string(status_obj);
+                if (strcmp(status, "failure") == 0) {
+                    json_object_put(response);
+                    fclose(dest_file);
+                    close(sock_fd);
+                    return -1;
+                }
+            }
+            json_object_put(response);
+            continue;  // Skip writing JSON responses to file
+        }
+        
+        // Write received data to file
+        size_t written = fwrite(buffer, 1, bytes_received, dest_file);
+        if (written < bytes_received) {
+            fclose(dest_file);
+            close(sock_fd);
+            return -1;
+        }
+
+        total_bytes += written;
+    }
+    
+    // Clean up
+    fclose(dest_file);
+    close(sock_fd);
+    
+    // Verify file was copied
+    if (total_bytes == 0) {
+        return -1;
+    }
+    
+    return 0;
 }
