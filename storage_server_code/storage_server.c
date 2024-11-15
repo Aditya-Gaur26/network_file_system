@@ -15,7 +15,7 @@
 #include <sys/stat.h>
 #include <limits.h> // Add this header for PATH_MAX
 #include <stdbool.h> // Add this header for bool type
-
+#include <ctype.h>
 
 #define PATH_MAX 4096
 #define MAX_PATHS 1000
@@ -27,7 +27,7 @@
 #define MAX_READ 4096
 #define CHUNK_SIZE 2000
 #define DATA_SIZE_TO_SHIFT_WRITE_STYLE 10000
-
+#define AUDIO_CHUNK_SIZE 2000
 
 
 // Get file information (size and permissions)
@@ -99,6 +99,8 @@ void send_to_naming_server(json_object*data);
 void send_naming_work_to_ns(char*type,char*status,char*error,int request_id);
 void  terminate_seperate_client_code();
 void send_to_client(json_object*data,int client_fd);
+bool is_audio_file(const char* path);
+void base64_encode(const unsigned char* input, size_t input_len, char* output, size_t* output_len);
 
 json_object* receive_request(int socket) {
     uint32_t length;
@@ -568,7 +570,7 @@ void* handle_single_client(void* arg) {
                 json_object_put(response);
                 json_object_put(file_info);
             }
-            else {
+            else{
                 json_object*response = json_object_new_object();
                 json_object_object_add(response , "status",json_object_new_string("failure"));
                 json_object_object_add(response , "error",json_object_new_string(error));
@@ -577,8 +579,110 @@ void* handle_single_client(void* arg) {
             }
             json_object_put(path_object);
         }
-        else if(strcmp("stream_audio_files",request_code) == 0 ){
+        else if(strcmp("stream_audio_files",request_code) == 0){
+            json_object *path_object;
+            int response_code = 1;
             
+            if(json_object_object_get_ex(client_request, "path", &path_object)) {
+                strcpy(path, json_object_get_string(path_object));
+                
+                if(!validate_path(path)) {
+                    response_code = 0;
+                    strcpy(error, "Invalid path");
+                }
+                add_base(&path);
+                
+                // Check if file exists and is an audio file
+                if(response_code == 1) {
+                    // Get file extension
+                    char *ext = strrchr(path, '.');
+                    if(ext == NULL) {
+                        response_code = 0;
+                        strcpy(error, "File has no extension");
+                    } else {
+                        // Convert extension to lowercase for comparison
+                        for(int i = 0; ext[i]; i++) {
+                            ext[i] = tolower(ext[i]);
+                        }
+                        
+                        // Check if it's an audio file
+                        if(strcmp(ext, ".mp3") != 0 && 
+                        strcmp(ext, ".wav") != 0 && 
+                        strcmp(ext, ".ogg") != 0 && 
+                        strcmp(ext, ".aac") != 0) {
+                            response_code = 0;
+                            strcpy(error, "Not an audio file");
+                        }
+                    }
+                }
+                
+                // Stream the audio file if everything is valid
+                if(response_code == 1) {
+                    FILE *audio_file = fopen(path, "rb");
+                    if(audio_file == NULL) {
+                        response_code = 0;
+                        strcpy(error, "Unable to open audio file");
+                    } else {
+                        // Send success response first
+                        json_object *response = json_object_new_object();
+                        json_object_object_add(response, "status", json_object_new_string("success"));
+                        json_object_object_add(response, "message", json_object_new_string("Starting audio stream"));
+                        json_object_object_add(response, "stop", json_object_new_int(0));
+                        send_to_client(response, client->client_fd);
+                        json_object_put(response);
+                        
+                        // Stream the file in chunks
+                        char buffer[AUDIO_CHUNK_SIZE];
+                        size_t bytes_read;
+                        while((bytes_read = fread(buffer, 1, sizeof(buffer), audio_file)) > 0) {
+                            json_object *chunk_response = json_object_new_object();
+                            
+                            // Convert binary data to base64
+                            char *base64_data = malloc(bytes_read * 2);  // Allocate more than needed
+                            size_t base64_len = 0;
+                            base64_encode((unsigned char *)buffer, bytes_read, base64_data, &base64_len);
+                            
+                            json_object_object_add(chunk_response, "status", json_object_new_string("streaming"));
+                            json_object_object_add(chunk_response, "data", json_object_new_string(base64_data));
+                            json_object_object_add(chunk_response, "bytes", json_object_new_int(bytes_read));
+                            json_object_object_add(chunk_response, "stop", json_object_new_int(0));
+                            
+                            send_to_client(chunk_response, client->client_fd);
+                            json_object_put(chunk_response);
+                            free(base64_data);
+                        }
+                        
+                        // Send end of stream message
+                        json_object *end_response = json_object_new_object();
+                        json_object_object_add(end_response, "status", json_object_new_string("complete"));
+                        json_object_object_add(end_response, "message", json_object_new_string("Stream complete"));
+                        json_object_object_add(end_response, "stop", json_object_new_int(1));
+                        send_to_client(end_response, client->client_fd);
+                        json_object_put(end_response);
+                        
+                        fclose(audio_file);
+                    }
+                }
+                
+                if(response_code == 0) {
+                    // Send error response
+                    json_object *response = json_object_new_object();
+                    json_object_object_add(response, "status", json_object_new_string("failure"));
+                    json_object_object_add(response, "error", json_object_new_string(error));
+                    json_object_object_add(response, "stop", json_object_new_int(1));
+                    send_to_client(response, client->client_fd);
+                    json_object_put(response);
+                }
+                
+                json_object_put(path_object);
+            } else {
+                json_object *response = json_object_new_object();
+                json_object_object_add(response, "status", json_object_new_string("failure"));
+                json_object_object_add(response, "error", json_object_new_string("Unable to extract path"));
+                json_object_object_add(response, "stop", json_object_new_int(1));
+                send_to_client(response, client->client_fd);
+                json_object_put(response);
+            }
         }
         free(error);
 
@@ -1310,29 +1414,29 @@ int get_file_info(const char* path, file_info_t* info) {
 // Stream audio file in chunks
 // callback is called for each chunk of data read
 // Returns: -1 on error, 0 on success
-// int stream_audio(const char* path, void (*callback)(const char* data, size_t size, void* user_data),void* user_data) {
-//     FILE* file = fopen(path, "rb");
-//     if (file == NULL) {
-//         return -1;
-//     }
+int stream_audio(const char* path, void (*callback)(const char* data, size_t size, void* user_data),void* user_data) {
+    FILE* file = fopen(path, "rb");
+    if (file == NULL) {
+        return -1;
+    }
 
-//     // Use a reasonable buffer size for streaming (e.g., 64KB)
-//     const size_t CHUNK_SIZE = 64 * 1024;
-//     char* buffer = (char*)malloc(CHUNK_SIZE);
-//     if (buffer == NULL) {
-//         fclose(file);
-//         return -1;
-//     }
+    // Use a reasonable buffer size for streaming (e.g., 64KB)
+    const size_t chunk_size = 64 * 1024;
+    char* buffer = (char*)malloc(chunk_size);
+    if (buffer == NULL) {
+        fclose(file);
+        return -1;
+    }
 
-//     size_t bytes_read;
-//     while ((bytes_read = fread(buffer, 1, CHUNK_SIZE, file)) > 0) {
-//         callback(buffer, bytes_read, user_data);
-//     }
+    size_t bytes_read;
+    while ((bytes_read = fread(buffer, 1, chunk_size, file)) > 0) {
+        callback(buffer, bytes_read, user_data);
+    }
 
-//     free(buffer);
-//     fclose(file);
-//     return 0;
-// }
+    free(buffer);
+    fclose(file);
+    return 0;
+}
 
 // Example callback function for streaming to a socket
 void stream_to_socket(const char* data, size_t size, void* user_data) {
@@ -1439,4 +1543,88 @@ void send_naming_work_to_ns(char*type,char*status,char*error,int request_id){
     if(request_id > 0)json_object_object_add(response , "request_id",json_object_new_int(request_id));
     send_to_naming_server(response);
     json_object_put(response);
+}
+
+
+bool is_audio_file(const char* path) {
+    const char* ext = strrchr(path, '.');
+    if(ext == NULL) return false;
+    
+    // Convert to lowercase for comparison
+    char ext_lower[10] = {0};
+    int i;
+    for(i = 0; ext[i] && i < 9; i++) {
+        ext_lower[i] = tolower(ext[i]);
+    }
+    
+    return (strcmp(ext_lower, ".mp3") == 0 ||
+            strcmp(ext_lower, ".wav") == 0 ||
+            strcmp(ext_lower, ".ogg") == 0 ||
+            strcmp(ext_lower, ".aac") == 0);
+}
+
+// Base64 encoding table
+static const char base64_table[] = {
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+    'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+    'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '+', '/', '\0'
+};
+
+// Function to encode data to base64
+void base64_encode(const unsigned char* input, size_t input_len, char* output, size_t* output_len) {
+    size_t i, j;
+    unsigned char remainder = 0;
+    unsigned char three_bytes[3];
+    
+    // Initialize output position
+    j = 0;
+    
+    // Process three bytes at a time
+    for(i = 0; i < input_len; i += 3) {
+        // Get three bytes (or what's left)
+        size_t bytes_to_encode = 0;
+        for(size_t k = 0; k < 3; k++) {
+            if(i + k < input_len) {
+                three_bytes[k] = input[i + k];
+                bytes_to_encode++;
+            } else {
+                three_bytes[k] = 0;
+            }
+        }
+        
+        // Encode to four base64 characters
+        if(bytes_to_encode > 0) {
+            // First base64 character
+            output[j++] = base64_table[three_bytes[0] >> 2];
+            
+            // Second base64 character
+            output[j++] = base64_table[((three_bytes[0] & 0x03) << 4) | 
+                                     ((three_bytes[1] & 0xf0) >> 4)];
+            
+            // Third base64 character
+            if(bytes_to_encode > 1) {
+                output[j++] = base64_table[((three_bytes[1] & 0x0f) << 2) |
+                                         ((three_bytes[2] & 0xc0) >> 6)];
+            } else {
+                output[j++] = '=';
+            }
+            
+            // Fourth base64 character
+            if(bytes_to_encode > 2) {
+                output[j++] = base64_table[three_bytes[2] & 0x3f];
+            } else {
+                output[j++] = '=';
+            }
+        }
+    }
+    
+    // Null terminate the output string
+    output[j] = '\0';
+    
+    // Set the output length
+    if(output_len != NULL) {
+        *output_len = j;
+    }
 }
