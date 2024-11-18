@@ -27,7 +27,7 @@
 #define MAX_READ 4096
 #define CHUNK_SIZE 2000
 #define DATA_SIZE_TO_SHIFT_WRITE_STYLE 10000
-#define AUDIO_CHUNK_SIZE 2000
+#define AUDIO_CHUNK_SIZE 4096
 
 
 // Get file information (size and permissions)
@@ -71,7 +71,7 @@ StorageServer server;
 int client_socket;
 int nm_socket;
 pthread_t client_thread;
-
+int SS_ID = -1;
 // Function prototypes
 int initialize_socket(int port);
 int connect_to_naming_server(const char* nm_ip, int nm_port);
@@ -97,17 +97,17 @@ ssize_t read_file_for_client(char*error,int client_fd ,char* path);
 void send_client_work_ack_to_ns(ClientInfo*client,char*type,char*status,char*error,int stop,int request_id);
 int is_within_base_dir(const char *path);
 void send_to_naming_server(json_object*data);
-void send_naming_work_to_ns(char*type,char*status,char*error,int request_id,int client_id);
+void send_naming_work_to_ns(char*type,char*status,char*error,int request_id,int client_id,char*operation,char*path,int ss_id);
 void  terminate_seperate_client_code();
 void send_to_client(json_object*data,int client_fd);
 bool is_audio_file(const char* path);
-void base64_encode(const unsigned char* input, size_t input_len, char* output, size_t* output_len);
+char* base64_encode(const unsigned char* data, size_t length) ;
 int copy_from_another_storage_server(char*storage,int storage_port,char*path,char*destination_path);
 int simple_write_to_file(char*buffer,char*path,int append);
-void add_paths_recursively(const char* base_path, const char* current_path, json_object* paths_array,json_object*types_array);  
+void add_paths_recursively(char* base_path, char* current_path, json_object** paths_array_ptr,json_object**types_array_ptr);  
 void ensure_path_exists(char* path);
 int is_path_in_current_directory(char* given_path);
-
+void print_binary(const unsigned char *data, size_t length);
 
 json_object* receive_request(int socket) {
     uint32_t length;
@@ -147,6 +147,15 @@ int main(int argc, char* argv[]) {
     server.nm_port = atoi(argv[3]);
     server.client_port = atoi(argv[4]);
     server.path_count = 0;
+    FILE*config_file = fopen("configuration.txt","r");
+    if(config_file == NULL){
+        printf("unable to open configuration file\n");
+    }
+    char ss_id_array[100];
+    if(fgets(ss_id_array,sizeof(ss_id_array),config_file)){
+        SS_ID = atoi(ss_id_array);
+    }
+    fclose(config_file);
 
     // get_local_ip
     strcpy(server.ip_address, get_local_ip());
@@ -276,16 +285,16 @@ int main(int argc, char* argv[]) {
                 }
 
                 int res = create_empty(path,is_directory);
-                if(res == -1){
+                if(res == 0){
                     response_code = 0;
                     strcpy(error,"path not created : may be server already has the same path");
                 }
-                if(res == 0){
-                    send_naming_work_to_ns("naming_server_related","success",error,request_id,client_id);
+                if(res == 1){
+                    send_naming_work_to_ns("naming_server_related","success",error,request_id,client_id,"create_empty",path,-1);
 
                 }
                 else if(res == -1){
-                    send_naming_work_to_ns("naming_server_related","failure",error,request_id,client_id);
+                    send_naming_work_to_ns("naming_server_related","failure",error,request_id,client_id,"create_empty",path,-1);
 
                 }
                 // json_object_put(path_object);
@@ -334,11 +343,11 @@ int main(int argc, char* argv[]) {
                     strcpy(error,"Not able to delete file ");
                 }
                 if(response_code == 1){
-                    send_naming_work_to_ns("naming_server_related","success",error,request_id,client_id);
+                    send_naming_work_to_ns("naming_server_related","success",error,request_id,client_id,"delete",path,-1);
 
                 }
                 else {
-                    send_naming_work_to_ns("naming_server_related","failure",error,request_id,client_id);
+                    send_naming_work_to_ns("naming_server_related","failure",error,request_id,client_id,"delete",path,-1);
                 }
                 // // json_object_put(path_object);
 
@@ -348,8 +357,10 @@ int main(int argc, char* argv[]) {
                 json_object*storage_ip_object;
                 json_object*storage_port_object;
                 json_object*destination_path_object;
+                json_object*storage_ss_id_object;
                 char*storage_ip = malloc(sizeof(char)*40);
                 int storage_port;
+                int storage_ss_id;
                 char*destination_path = malloc(sizeof(char)*256);
                 
                 if(json_object_object_get_ex(nm_response,"client_id",&client_id_object)){
@@ -399,17 +410,25 @@ int main(int argc, char* argv[]) {
                     response_code = 0;
                 }
 
+                if(json_object_object_get_ex(nm_response,"ssid",&storage_ss_id_object)){
+                    storage_ss_id = json_object_get_int(storage_ss_id_object);
+                }
+                else{
+                    strcpy(error,"not able to extract storage server's ss_id");
+                    response_code = 0;
+                }
+
                 int res = copy_from_another_storage_server(storage_ip,storage_port,path,destination_path);
                 if(res == -1){
                     response_code = 0;
                     strcpy(error,"unable to copy from storage server");
                 }
                 if(response_code == 1){
-                    send_naming_work_to_ns("naming_server_related","success",error,request_id,client_id);
+                    send_naming_work_to_ns("naming_server_related","success",error,request_id,client_id,"copy",path,storage_ss_id);
 
                 }
                 else {
-                    send_naming_work_to_ns("naming_server_related","failure",error,request_id,client_id);
+                    send_naming_work_to_ns("naming_server_related","failure",error,request_id,client_id,"copy",path,storage_ss_id);
                 }
             
                 // // json_object_put(path_object);
@@ -426,7 +445,7 @@ int main(int argc, char* argv[]) {
                 json_object* types_array = json_object_new_array();
                 json_object*list_path_object;
                 char list_path[1024];
-                if(json_object_object_get_ex(nm_response,"list_path",&list_path_object)){
+                if(json_object_object_get_ex(nm_response,"path",&list_path_object)){
                     strcpy(list_path,json_object_get_string(list_path_object));
                     // if(!directory_exists(list_path)){
                     //     response_code=0;
@@ -439,7 +458,7 @@ int main(int argc, char* argv[]) {
                 }
                 
                 if(response_code = 1){
-                    add_paths_recursively(list_path,list_path, paths_array,types_array);
+                    add_paths_recursively(list_path,list_path, &paths_array,&types_array);
                     json_object_object_add(response, "status", json_object_new_string("success"));
                     json_object_object_add(response, "paths", paths_array);
                     json_object_object_add(response, "types", types_array);
@@ -713,6 +732,8 @@ void* handle_single_client(void* arg) {
                 json_object_object_add(file_info, "last_modified", json_object_new_string(last_modified_str));
                 // Add whether it's a directory or a file
                 json_object_object_add(file_info, "is_directory", json_object_new_boolean(info_holder->is_directory));
+                json_object_object_add(file_info, "file_name", json_object_new_string(strrchr(path,'/')+ 1));
+                json_object_object_add(file_info, "file_path", json_object_new_string(strchr(path,'/')+1) );
                 // Add the file info to the response
                 json_object_object_add(response, "file_info", file_info);
                 json_object_object_add(response,"stop",json_object_new_int(1));
@@ -790,36 +811,37 @@ void* handle_single_client(void* arg) {
                         // // json_object_put(response);
                         
                         // Stream the file in chunks
-                        char buffer[AUDIO_CHUNK_SIZE];
+                        char temp_buffer[1024];
+                        char buffer[17640];
+                        int total_bytes_read = 0;
                         size_t bytes_read;
-                        while((bytes_read = fread(buffer, 1, sizeof(buffer), audio_file)) > 0) {
-                            json_object *chunk_response = json_object_new_object();
-                            
-                            // Convert binary data to base64
-                            char *base64_data = malloc(bytes_read * 2);  // Allocate more than needed
+                        
+
+                        while ((bytes_read = fread(buffer, 1, sizeof(buffer), audio_file)) > 0) {
+
+                            char *base64_data = NULL;
                             size_t base64_len = 0;
-                            base64_encode((unsigned char *)buffer, bytes_read, base64_data, &base64_len);
-                            
+                            base64_data = base64_encode((unsigned char*)buffer, bytes_read);
+                            total_bytes_read+=bytes_read;
+                            // Create JSON response
+                            json_object *chunk_response = json_object_new_object();
                             json_object_object_add(chunk_response, "status", json_object_new_string("streaming"));
                             json_object_object_add(chunk_response, "data", json_object_new_string(base64_data));
                             json_object_object_add(chunk_response, "bytes", json_object_new_int(bytes_read));
                             json_object_object_add(chunk_response, "stop", json_object_new_int(0));
-                            
+                            json_object_object_add(chunk_response, "total_bytes_read", json_object_new_int(total_bytes_read));
+
+                            // Send to client
                             send_to_client(chunk_response, client->client_fd);
-                            // // json_object_put(chunk_response);
+
+                            // Clean up
                             free(base64_data);
+                         
+                            
                         }
-                        
-                        // Send end of stream message
-                        json_object *end_response = json_object_new_object();
-                        json_object_object_add(end_response, "status", json_object_new_string("success"));
-                        json_object_object_add(end_response, "message", json_object_new_string("Stream complete"));
-                        json_object_object_add(end_response, "stop", json_object_new_int(1));
-                        send_to_client(end_response, client->client_fd);
-                        // // json_object_put(end_response);
-                        
-                        fclose(audio_file);
                     }
+
+                     
                 }
                 
                 if(response_code == 0) {
@@ -831,6 +853,15 @@ void* handle_single_client(void* arg) {
                     send_to_client(response, client->client_fd);
                     // // json_object_put(response);
                 }
+                else{
+                    json_object *response = json_object_new_object();
+                    json_object_object_add(response, "status", json_object_new_string("success"));
+                    json_object_object_add(response, "error", json_object_new_string(error));
+                    json_object_object_add(response, "stop", json_object_new_int(1));
+                    send_to_client(response, client->client_fd);
+
+                }
+
                 
                 // json_object_put(path_object);
             } else {
@@ -848,15 +879,16 @@ void* handle_single_client(void* arg) {
             json_object* types_array = json_object_new_array();
             json_object*list_path_object;
             char list_path[1024];
-            if(json_object_object_get_ex(client_request,"list_path",&list_path_object)){
+            if(json_object_object_get_ex(client_request,"path",&list_path_object)){
                 strcpy(list_path,json_object_get_string(list_path_object));
                 // if(!directory_exists(list_path)){
                 //     response_code=0;
                 //     strcpy(error,"root directory not valid");
                 // }
             }
+          
             
-            add_paths_recursively(list_path,list_path, paths_array,types_array);
+            add_paths_recursively(list_path,list_path, &paths_array,&types_array);
             
             json_object_object_add(response, "status", json_object_new_string("success"));
             json_object_object_add(response, "paths", paths_array);
@@ -1034,11 +1066,13 @@ int connect_to_naming_server(const char* nm_ip, int nm_port) {
 void register_with_naming_server(StorageServer* server, int nm_socket) {
    json_object *request = json_object_new_object();
 
+   
     // Add the fields to the JSON object
     json_object_object_add(request, "type", json_object_new_string("storage_server_register"));
     json_object_object_add(request, "ip", json_object_new_string(server->ip_address));
     json_object_object_add(request, "nm_port", json_object_new_int(server->nm_port));
     json_object_object_add(request, "client_port", json_object_new_int(server->client_port));
+    json_object_object_add(request,"ss_id",json_object_new_int(SS_ID));
 
     // Create the "accessible_paths" array and add paths to it
     json_object *paths_array = json_object_new_array();
@@ -1064,8 +1098,11 @@ void register_with_naming_server(StorageServer* server, int nm_socket) {
         printf("%s\n",status_str);
         json_object* ss_id;
         if (json_object_object_get_ex(nm_response, "ss_id", &ss_id)) {
-            int type = json_object_get_int(ss_id);
-            printf("%d\n",type);
+            SS_ID = json_object_get_int(ss_id);
+            printf("%d\n",SS_ID);
+            FILE*config_file = fopen("configuration.txt","w");
+            fprintf(config_file,"%d",SS_ID);
+            fclose(config_file);
         }
         // json_object_put(ss_id);
     }
@@ -1151,20 +1188,87 @@ char* get_local_ip() {
 
 // Create an empty file or directory
 int create_empty(const char* path, int is_directory) {
-    if (is_directory) {
-        // Create directory with read/write/execute permissions (0755)
-        if (mkdir(path, 0755) == 0) {
-            return 0;  // Success
+    char tmp[256];
+    char* p = NULL;
+    size_t len;
+    struct stat path_stat;
+    int created = 0;
+    
+    snprintf(tmp, sizeof(tmp), "%s", path);
+    len = strlen(tmp);
+    
+    // Remove trailing slash if exists
+    if (len > 0 && tmp[len - 1] == '/') {
+        tmp[len - 1] = 0;
+        len--;
+    }
+    
+    // If it's a file path, we'll create directories only up to the last slash
+    if (!is_directory) {
+        char* last_slash = strrchr(tmp, '/');
+        if (last_slash) {
+            *last_slash = 0;  // Temporarily cut off the filename
+            
+            // Create each directory in the path
+            for (p = tmp + 1; p < last_slash; p++) {
+                if (*p == '/') {
+                    *p = 0;
+                    if (stat(tmp, &path_stat) != 0) {
+                        if (mkdir(tmp, 0755) == 0) {
+                            created = 1;
+                        }
+                    }
+                    *p = '/';
+                }
+            }
+            
+            // Create the final directory before the file
+            if (stat(tmp, &path_stat) != 0) {
+                if (mkdir(tmp, 0755) == 0) {
+                    created = 1;
+                }
+            }
+            
+            *last_slash = '/';  // Restore the full path
+            
+            // Check if file already exists
+            if (stat(tmp, &path_stat) == 0) {
+                return 0;  // File exists
+            }
+            
+            // Create empty file
+            FILE* f = fopen(tmp, "w");
+            if (f) {
+                fclose(f);
+                return 1;  // Successfully created
+            }
+            return 0;  // Failed to create file
         }
     } else {
-        // Create empty file
-        FILE* file = fopen(path, "w");
-        if (file != NULL) {
-            fclose(file);
-            return 0;  // Success
+        // It's a directory path, create all directories
+        for (p = tmp + 1; *p; p++) {
+            if (*p == '/') {
+                *p = 0;
+                if (stat(tmp, &path_stat) != 0) {
+                    if (mkdir(tmp, 0755) == 0) {
+                        created = 1;
+                    }
+                }
+                *p = '/';
+            }
+        }
+        
+        // Create/check the final directory
+        if (stat(tmp, &path_stat) == 0) {
+            return 0;  // Directory already exists
+        }
+        
+        if (mkdir(tmp, 0755) == 0) {
+            return 1;  // Successfully created
         }
     }
-    return -1;  // Error
+    
+    return created; 
 }
 
 // Delete a file or directory recursively
@@ -1289,7 +1393,7 @@ ssize_t read_file_for_client(char*error,int client_fd,char* path) {
     ssize_t file_size = ftell(file);
     fseek(file, 0, SEEK_SET);
 
-    printf("1\n");
+    // printf("1\n");
     if (file_size < 0) {
         fclose(file);
         strcpy(error,"unable to get file size ");
@@ -1301,7 +1405,7 @@ ssize_t read_file_for_client(char*error,int client_fd,char* path) {
         // json_object_put(response);
         return -1;
     }
-    printf("2\n");
+    // printf("2\n");
     int bytes_read =0;
     int chunk_size =0;
     while( ( chunk_size = fread(buffer,1,CHUNK_SIZE,file)) > 0){
@@ -1315,7 +1419,7 @@ ssize_t read_file_for_client(char*error,int client_fd,char* path) {
         send_to_client(response,client_fd);
         // json_object_put(response);
     }
-    printf("3\n");
+    // printf("3\n");
     
     if (ferror(file)) {
         fclose(file);
@@ -1329,7 +1433,7 @@ ssize_t read_file_for_client(char*error,int client_fd,char* path) {
         return -1;
     }
 
-    printf("4\n");
+    // printf("4\n");
     if (bytes_read != file_size) {
         fclose(file);
         strcpy(error,"unable to read the file completely");
@@ -1341,7 +1445,7 @@ ssize_t read_file_for_client(char*error,int client_fd,char* path) {
         // json_object_put(response);
         return -1;
     }
-    printf("5\n");
+    // printf("5\n");
 
     json_object*response = json_object_new_object();
     json_object_object_add(response , "status",json_object_new_string("success"));
@@ -1609,44 +1713,6 @@ int get_file_info(const char* path, file_info_t* info) {
     return 0;
 }
 
-// Stream audio file in chunks
-// callback is called for each chunk of data read
-// Returns: -1 on error, 0 on success
-int stream_audio(const char* path, void (*callback)(const char* data, size_t size, void* user_data),void* user_data) {
-    FILE* file = fopen(path, "rb");
-    if (file == NULL) {
-        return -1;
-    }
-
-    // Use a reasonable buffer size for streaming (e.g., 64KB)
-    const size_t chunk_size = 64 * 1024;
-    char* buffer = (char*)malloc(chunk_size);
-    if (buffer == NULL) {
-        fclose(file);
-        return -1;
-    }
-
-    size_t bytes_read;
-    while ((bytes_read = fread(buffer, 1, chunk_size, file)) > 0) {
-        callback(buffer, bytes_read, user_data);
-    }
-
-    free(buffer);
-    fclose(file);
-    return 0;
-}
-
-// Example callback function for streaming to a socket
-void stream_to_socket(const char* data, size_t size, void* user_data) {
-    int socket_fd = *(int*)user_data;
-    
-    // First send the chunk size
-    uint32_t chunk_size = htonl(size);
-    send(socket_fd, &chunk_size, sizeof(chunk_size), 0);
-    
-    // Then send the chunk data
-    send(socket_fd, data, size, 0);
-}
 
 // Read file in range (for partial reads/resume support)
 // Returns: -1 on error, bytes read on success
@@ -1686,7 +1752,7 @@ void send_to_client(json_object*data,int client_fd){
     const char* str = json_object_to_json_string(data);
     uint32_t length = strlen(str);
     uint32_t network_length = htonl(length);
-    
+    printf("sending %s\n",str);
     send(client_fd, &network_length, sizeof(network_length), 0);
     send(client_fd, str, length, 0);
 }
@@ -1734,13 +1800,16 @@ void send_client_work_ack_to_ns(ClientInfo*client,char*type,char*status,char*err
     // json_object_put(response);
 }
 
-void send_naming_work_to_ns(char*type,char*status,char*error,int request_id,int client_id){
+void send_naming_work_to_ns(char*type,char*status,char*error,int request_id,int client_id , char*operation,char*path,int ss_id){
     json_object*response = json_object_new_object();
     json_object_object_add(response , "client_id",json_object_new_int(client_id));
     json_object_object_add(response , "type",json_object_new_string(type));
     json_object_object_add(response , "status",json_object_new_string(status));
     json_object_object_add(response , "error",json_object_new_string(error));
+    json_object_object_add(response , "operation",json_object_new_string(operation));
+    json_object_object_add(response , "path",json_object_new_string(path));
     if(request_id > 0)json_object_object_add(response , "request_id",json_object_new_int(request_id));
+    if(ss_id > 0) json_object_object_add(response,"ssid",json_object_new_int(ss_id));
     send_to_naming_server(response);
     // json_object_put(response);
 }
@@ -1763,72 +1832,40 @@ bool is_audio_file(const char* path) {
             strcmp(ext_lower, ".aac") == 0);
 }
 
-// Base64 encoding table
-static const char base64_table[] = {
-    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
-    'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
-    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
-    'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '+', '/', '\0'
-};
 
-// Function to encode data to base64
-void base64_encode(const unsigned char* input, size_t input_len, char* output, size_t* output_len) {
+// Base64 Encoding Table
+static const char base64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+// Function to encode binary data to Base64
+char* base64_encode(const unsigned char* data, size_t length) {
+    size_t encoded_length = 4 * ((length + 2) / 3);
+    char* encoded_data = (char*)malloc(encoded_length + 1);
+    if (encoded_data == NULL) {
+        return NULL; // Memory allocation failed
+    }
+
     size_t i, j;
-    unsigned char remainder = 0;
-    unsigned char three_bytes[3];
-    
-    // Initialize output position
-    j = 0;
-    
-    // Process three bytes at a time
-    for(i = 0; i < input_len; i += 3) {
-        // Get three bytes (or what's left)
-        size_t bytes_to_encode = 0;
-        for(size_t k = 0; k < 3; k++) {
-            if(i + k < input_len) {
-                three_bytes[k] = input[i + k];
-                bytes_to_encode++;
-            } else {
-                three_bytes[k] = 0;
-            }
-        }
-        
-        // Encode to four base64 characters
-        if(bytes_to_encode > 0) {
-            // First base64 character
-            output[j++] = base64_table[three_bytes[0] >> 2];
-            
-            // Second base64 character
-            output[j++] = base64_table[((three_bytes[0] & 0x03) << 4) | 
-                                     ((three_bytes[1] & 0xf0) >> 4)];
-            
-            // Third base64 character
-            if(bytes_to_encode > 1) {
-                output[j++] = base64_table[((three_bytes[1] & 0x0f) << 2) |
-                                         ((three_bytes[2] & 0xc0) >> 6)];
-            } else {
-                output[j++] = '=';
-            }
-            
-            // Fourth base64 character
-            if(bytes_to_encode > 2) {
-                output[j++] = base64_table[three_bytes[2] & 0x3f];
-            } else {
-                output[j++] = '=';
-            }
-        }
-    }
-    
-    // Null terminate the output string
-    output[j] = '\0';
-    
-    // Set the output length
-    if(output_len != NULL) {
-        *output_len = j;
-    }
-}
+    for (i = 0, j = 0; i < length;) {
+        uint32_t octet_a = i < length ? data[i++] : 0;
+        uint32_t octet_b = i < length ? data[i++] : 0;
+        uint32_t octet_c = i < length ? data[i++] : 0;
 
+        uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
+
+        encoded_data[j++] = base64_table[(triple >> 18) & 0x3F];
+        encoded_data[j++] = base64_table[(triple >> 12) & 0x3F];
+        encoded_data[j++] = base64_table[(triple >> 6) & 0x3F];
+        encoded_data[j++] = base64_table[triple & 0x3F];
+    }
+
+    // Handle padding
+    for (size_t i = 0; i < (encoded_length - j); ++i) {
+        encoded_data[encoded_length - 1 - i] = '=';
+    }
+
+    encoded_data[encoded_length] = '\0'; // Null-terminate the Base64 string
+    return encoded_data;
+}
 int copy_from_another_storage_server(char*storage_ip,int storage_port,char*path,char*destination_path){
 
     int sock_fd, bytes_received, total_bytes = 0;
@@ -1923,6 +1960,7 @@ int copy_from_another_storage_server(char*storage_ip,int storage_port,char*path,
         json_object* read_request = json_object_new_object();
         json_object_object_add(read_request, "request_code", json_object_new_string("read"));
         json_object_object_add(read_request, "path", json_object_new_string(full_source_path));
+        json_object_object_add(read_request, "client_id", json_object_new_int(-1));
         
         send_to_client(read_request, new_sock_fd);
 
@@ -1971,7 +2009,7 @@ int copy_from_another_storage_server(char*storage_ip,int storage_port,char*path,
                     if (strlen(buffer) > 100000 - 10000) {
                         simple_write_to_file(buffer, full_dest_path, append_it);
                         append_it = 1;
-                        buffer[0] = '\0';
+                        strcpy(buffer,"");
                     }
                 }
                 else {
@@ -2033,19 +2071,24 @@ int simple_write_to_file(char *buffer, char *path, int append) {
     // Return success code
     return 1;
 }
-void add_paths_recursively(const char* base_path, const char* current_path, json_object* paths_array, json_object* types_array) {
+void add_paths_recursively(char* base_path, char* current_path, json_object** paths_array_ptr, json_object** types_array_ptr) {
     struct stat path_stat;
-    
+    json_object*paths_array = *paths_array_ptr;
+    json_object*types_array = *types_array_ptr;
+    printf("hello base path |%s| current path |%s| \n",base_path,current_path);
     // First check if current_path is a file
     if (stat(current_path, &path_stat) == 0 && S_ISREG(path_stat.st_mode)) {
         // It's a file, just add it to the array
         char relative_path[1024];
         // +1 to skip the trailing slash after base_path
         snprintf(relative_path, sizeof(relative_path), "%s", current_path + strlen(base_path) + 1);
+        printf("%s\n",relative_path);
         json_object_array_add(paths_array, json_object_new_string(relative_path));
         json_object_array_add(types_array, json_object_new_string("file"));
         return;
     }
+
+    printf("%s\n",current_path);
     
     // If it's a directory, proceed with directory traversal
     char path[1024];
@@ -2065,7 +2108,7 @@ void add_paths_recursively(const char* base_path, const char* current_path, json
         char relative_path[1024];
         // +1 to also skip the trailing slash after base_path
         snprintf(relative_path, sizeof(relative_path), "%s", path + strlen(base_path) + 1);
-        
+        printf("%s\n",relative_path);
         if (stat(path, &path_stat) == 0) {
             if (S_ISREG(path_stat.st_mode)) {
                 // It's a file
@@ -2075,7 +2118,7 @@ void add_paths_recursively(const char* base_path, const char* current_path, json
                 // It's a directory
                 json_object_array_add(paths_array, json_object_new_string(relative_path));
                 json_object_array_add(types_array, json_object_new_string("directory"));
-                add_paths_recursively(base_path, path, paths_array, types_array);
+                add_paths_recursively(base_path, path, &paths_array, &types_array);
             }
         }
     }
@@ -2325,4 +2368,14 @@ int backup_files_from_storage_server(char *storage_ip, int storage_port, json_ob
     }
 
     return success;
+}
+
+void print_binary(const unsigned char *data, size_t length) {
+    for (size_t i = 0; i < length; i++) {
+        for (int bit = 7; bit >= 0; bit--) {
+            printf("%d", (data[i] >> bit) & 1);
+        }
+        printf(" ");
+    }
+    printf("\n");
 }
