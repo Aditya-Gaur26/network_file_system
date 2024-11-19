@@ -1,0 +1,4 @@
+c2/
+extrafile.txt
+c2/xyz.txt/
+c2/mnz.txt
