@@ -108,6 +108,7 @@ void add_paths_recursively(char* base_path, char* current_path, json_object** pa
 void ensure_path_exists(char* path,int is_directory);
 int is_path_in_current_directory(char* given_path);
 void print_binary(const unsigned char *data, size_t length);
+int backup_files_from_storage_server(char *storage_ip, int storage_port, json_object *paths_array, json_object *types_array,char*parent_directory);
 
 json_object* receive_request(int socket) {
     uint32_t length;
@@ -143,7 +144,7 @@ int main(int argc, char* argv[]) {
     printf("hello\n");
 
     const char availaible_paths_file_name[MAX_PATH_LENGTH] = "available_paths.txt";
-    server.server_id = atoi(argv[1]);
+    
     server.nm_port = atoi(argv[3]);
     server.client_port = atoi(argv[4]);
     server.path_count = 0;
@@ -156,6 +157,7 @@ int main(int argc, char* argv[]) {
         SS_ID = atoi(ss_id_array);
     }
     fclose(config_file);
+    server.server_id = SS_ID;
 
     // get_local_ip
     strcpy(server.ip_address, get_local_ip());
@@ -230,7 +232,8 @@ int main(int argc, char* argv[]) {
         json_object* nm_response = receive_request(nm_socket);
         if(nm_response == NULL){
             
-            return 0;
+            // return 0;
+            continue;
         }
         
         char*error = malloc(sizeof(char)*1000);
@@ -479,7 +482,12 @@ int main(int argc, char* argv[]) {
                 json_object*parent_directory_object;
                 json_object*paths_array_object;
                 json_object*types_array_object;
+                json_object*storage_ip_object;
+                json_object*storage_port_object;
                 char parent_directory[1024];
+                char storage_ip[100];
+                int storage_port;
+                printf("replica started\n");
                 if(json_object_object_get_ex(nm_response,"parent_directory",&parent_directory_object)){
                     strcpy(parent_directory,json_object_get_string(parent_directory_object));
                 }
@@ -487,10 +495,42 @@ int main(int argc, char* argv[]) {
                     response_code = 0;
                     strcpy(error,"not able to get parent directory");
                 }
+                printf("r1\n");
 
                 if(!json_object_object_get_ex(nm_response,"paths",&paths_array_object) || !json_object_object_get_ex(nm_response,"types",&types_array_object) ){
                     response_code= 0;
                     strcpy(error,"not able to get paths");
+                }
+
+                printf("r2\n");
+
+                if(json_object_object_get_ex(nm_response,"storage_ip",&storage_ip_object)){
+                    strcpy(storage_ip,json_object_get_string(storage_ip_object));
+                }
+                else{
+                    response_code = 0;
+                    strcpy(error,"IP of storage server that needs to be replicated not provided");
+                }
+
+                printf("r3\n");
+
+                if(json_object_object_get_ex(nm_response,"storage_port",&storage_port_object)){
+                    storage_port = json_object_get_int(storage_port_object);
+                }
+                else{
+                    response_code =0 ;
+                    strcpy(error,"PORT of storage server that needs to be replicated not provided");
+                }
+                printf("starting the backup of files\n");
+                int res = 1;
+                if(response_code == 1) res =  backup_files_from_storage_server(storage_ip,storage_port,paths_array_object,types_array_object,parent_directory);
+
+                if(res == 1 && response_code == 1){
+                    send_naming_work_to_ns("naming_server_related","success",error,-1,-1,"replica",storage_ip,-1);
+                }
+                else{
+                    send_naming_work_to_ns("naming_server_related","failure",error,-1,-1,"replica",storage_ip,-1);
+                    
                 }
             }
           
@@ -1667,15 +1707,15 @@ int write_file_for_client_large(ClientInfo*client , char*path ,int append,char* 
             break;
         }
 
-        if(chunk_size > CHUNK_SIZE || strlen(data) != chunk_size){
-            if(chunk_size != strlen(data) ){
-                strcpy(error,"chunk size does not matches length of the data");
-            }
-            else strcpy(error ,"chunk size cannot exceed 2000");
+        // if(chunk_size > CHUNK_SIZE || strlen(data) != chunk_size){
+        //     if(chunk_size != strlen(data) ){
+        //         strcpy(error,"chunk size does not matches length of the data");
+        //     }
+        //     else strcpy(error ,"chunk size cannot exceed 2000");
             
-            send_client_work_ack_to_ns(client,"client_related","failure",error,1,request_id);
-            break;
-        }
+        //     send_client_work_ack_to_ns(client,"client_related","failure",error,1,request_id);
+        //     break;
+        // }
 
 
         strcat(large_data,data);
@@ -1685,7 +1725,7 @@ int write_file_for_client_large(ClientInfo*client , char*path ,int append,char* 
         if(total_bytes_written > 1000000 - 10000){
             fwrite(large_data,1,total_bytes_written,file);
             total_bytes_written=0;
-            large_data[0]='\0';
+            strcpy(large_data,"");
         }
        
     }
@@ -2241,7 +2281,7 @@ int backup_files_from_storage_server(char *storage_ip, int storage_port, json_ob
     if (sock_fd < 0) {
         return -1;
     }
-    
+    printf("1\n");
     // Set up server address structure
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
@@ -2250,6 +2290,7 @@ int backup_files_from_storage_server(char *storage_ip, int storage_port, json_ob
         close(sock_fd);
         return -1;
     }
+    printf("2\n");
     
     // Test connection to server
     if (connect(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
@@ -2263,7 +2304,7 @@ int backup_files_from_storage_server(char *storage_ip, int storage_port, json_ob
     // Iterate through each path and copy it
     int success = 1;
     int array_length = json_object_array_length(paths_array);
-    
+    printf("3\n");
     for (int i = 0; i < array_length; i++) {
         json_object* path_obj = json_object_array_get_idx(paths_array, i);
         json_object* type_obj = json_object_array_get_idx(types_array, i);
@@ -2274,7 +2315,7 @@ int backup_files_from_storage_server(char *storage_ip, int storage_port, json_ob
         // Construct destination path
         char full_dest_path[512];
         snprintf(full_dest_path, sizeof(full_dest_path), "%s/%s", parent_directory, relative_path);
-
+        printf("%s\n",full_dest_path);
         if (strcmp(type, "directory") == 0) {
             // If it's a directory, just ensure it exists
             ensure_path_exists(full_dest_path,1);
@@ -2297,6 +2338,7 @@ int backup_files_from_storage_server(char *storage_ip, int storage_port, json_ob
         json_object* read_request = json_object_new_object();
         json_object_object_add(read_request, "request_code", json_object_new_string("read"));
         json_object_object_add(read_request, "path", json_object_new_string(relative_path));
+        json_object_object_add(read_request,"client_id",json_object_new_int(-1));
         
         send_to_client(read_request, new_sock_fd);
 
