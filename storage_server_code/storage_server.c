@@ -105,7 +105,7 @@ char* base64_encode(const unsigned char* data, size_t length) ;
 int copy_from_another_storage_server(char*storage,int storage_port,char*path,char*destination_path);
 int simple_write_to_file(char*buffer,char*path,int append);
 void add_paths_recursively(char* base_path, char* current_path, json_object** paths_array_ptr,json_object**types_array_ptr);  
-void ensure_path_exists(char* path);
+void ensure_path_exists(char* path,int is_directory);
 int is_path_in_current_directory(char* given_path);
 void print_binary(const unsigned char *data, size_t length);
 
@@ -230,9 +230,9 @@ int main(int argc, char* argv[]) {
         json_object* nm_response = receive_request(nm_socket);
         if(nm_response == NULL){
             
-            terminate_seperate_client_code();
             return 0;
         }
+        
         char*error = malloc(sizeof(char)*1000);
         strcpy(error,"No error");
         char*path = malloc(sizeof(char)*256);
@@ -1405,6 +1405,14 @@ ssize_t read_file_for_client(char*error,int client_fd,char* path) {
         // json_object_put(response);
         return -1;
     }
+    else if(file_size == 0){
+        json_object*response = json_object_new_object();
+        json_object_object_add(response , "status",json_object_new_string("success"));
+        json_object_object_add(response,"data",json_object_new_string(""));
+        json_object_object_add(response,"stop",json_object_new_int(0));
+        json_object_object_add(response,"chunk_size",json_object_new_int(0));
+        send_to_client(response,client_fd);
+    }
     // printf("2\n");
     int bytes_read =0;
     int chunk_size =0;
@@ -1743,7 +1751,7 @@ void send_to_naming_server(json_object*data){
     const char* str = json_object_to_json_string(data);
     uint32_t length = strlen(str);
     uint32_t network_length = htonl(length);
-    
+    printf("sending to naming server |%s|\n",str);
     send(nm_socket, &network_length, sizeof(network_length), 0);
     send(nm_socket, str, length, 0);
 }
@@ -1752,7 +1760,7 @@ void send_to_client(json_object*data,int client_fd){
     const char* str = json_object_to_json_string(data);
     uint32_t length = strlen(str);
     uint32_t network_length = htonl(length);
-    printf("sending %s\n",str);
+    printf("sending to client |%s|\n",str);
     send(client_fd, &network_length, sizeof(network_length), 0);
     send(client_fd, str, length, 0);
 }
@@ -1918,7 +1926,7 @@ int copy_from_another_storage_server(char*storage_ip,int storage_port,char*path,
         return -1;
     }
     
-    ensure_path_exists(destination_path);
+    ensure_path_exists(destination_path,0);
     
     // Iterate through each path and copy it
     int success = 1;
@@ -1936,10 +1944,10 @@ int copy_from_another_storage_server(char*storage_ip,int storage_port,char*path,
         char full_dest_path[512];
         snprintf(full_source_path, sizeof(full_source_path), "%s/%s", path, relative_path);
         snprintf(full_dest_path, sizeof(full_dest_path), "%s/%s", destination_path, relative_path);
-
+        printf("%s\n",full_dest_path);
         if (strcmp(type, "directory") == 0) {
             // If it's a directory, just ensure it exists
-            ensure_path_exists(full_dest_path);
+            ensure_path_exists(full_dest_path,1);
             continue;
         }
 
@@ -1953,7 +1961,7 @@ int copy_from_another_storage_server(char*storage_ip,int storage_port,char*path,
         }
 
         // Ensure directory exists for this file
-        ensure_path_exists(full_dest_path);
+        ensure_path_exists(full_dest_path,0);
 
         
         // Send read request for this file
@@ -2000,7 +2008,7 @@ int copy_from_another_storage_server(char*storage_ip,int storage_port,char*path,
                 break;
             }
             else if (strcmp(status, "success") == 0) {
-                if (stop == 0) break;
+                if (stop == 1) break;
                 
                 char temp_buffer[2*CHUNK_SIZE];
                 if (json_object_object_get_ex(response, "data", &data_object)) {
@@ -2034,6 +2042,7 @@ int copy_from_another_storage_server(char*storage_ip,int storage_port,char*path,
         close(new_sock_fd);
     }
 
+    printf("copying of data is complete\n");
     // json_object_put(list_request);
     // json_object_put(list_response);
     close(sock_fd);
@@ -2139,51 +2148,47 @@ int directory_exists(const char* path) {
     closedir(dir);
     return found;
 }
-
-void ensure_path_exists(char* path) {
+void ensure_path_exists(char* path, int is_directory) {
     char tmp[256];
     char* p = NULL;
     size_t len;
-    int is_file = 0;
     struct stat path_stat;
+    char* last_slash;
     
     snprintf(tmp, sizeof(tmp), "%s", path);
     len = strlen(tmp);
     
     // Remove trailing slash if exists
-    if (tmp[len - 1] == '/')
+    if (tmp[len - 1] == '/') {
         tmp[len - 1] = 0;
-        
-    // Check if the path is likely a file (has no trailing slash and has an extension)
-    char* last_slash = strrchr(tmp, '/');
-    char* last_dot = strrchr(tmp, '.');
-    if (last_dot && last_slash && last_dot > last_slash) {
-        is_file = 1;
     }
     
-    // If it's a file path, we'll create directories only up to the last slash
-    if (is_file && last_slash) {
-        *last_slash = 0;  // Temporarily cut off the filename
-        
-        // Create each directory in the path
-        for (p = tmp + 1; p < last_slash; p++) {
-            if (*p == '/') {
-                *p = 0;
-                if (stat(tmp, &path_stat) != 0) {
-                    mkdir(tmp, 0755);
+    if (!is_directory) {
+        // For files, create directories only up to the last slash
+        last_slash = strrchr(tmp, '/');
+        if (last_slash) {
+            *last_slash = 0;  // Temporarily cut off the filename
+            
+            // Create each directory in the path
+            for (p = tmp + 1; p < last_slash; p++) {
+                if (*p == '/') {
+                    *p = 0;
+                    if (stat(tmp, &path_stat) != 0) {
+                        mkdir(tmp, 0755);
+                    }
+                    *p = '/';
                 }
-                *p = '/';
             }
+            
+            // Create the final directory before the file
+            if (stat(tmp, &path_stat) != 0) {
+                mkdir(tmp, 0755);
+            }
+            
+            *last_slash = '/';  // Restore the full path
         }
-        
-        // Create the final directory before the file
-        if (stat(tmp, &path_stat) != 0) {
-            mkdir(tmp, 0755);
-        }
-        
-        *last_slash = '/';  // Restore the full path
     } else {
-        // It's a directory path, create all directories
+        // For directories, create all directories in the path
         for (p = tmp + 1; *p; p++) {
             if (*p == '/') {
                 *p = 0;
@@ -2199,7 +2204,6 @@ void ensure_path_exists(char* path) {
         }
     }
 }
-
 
 int is_path_in_current_directory(char* given_path) {
     char current_dir[1024];
@@ -2273,7 +2277,7 @@ int backup_files_from_storage_server(char *storage_ip, int storage_port, json_ob
 
         if (strcmp(type, "directory") == 0) {
             // If it's a directory, just ensure it exists
-            ensure_path_exists(full_dest_path);
+            ensure_path_exists(full_dest_path,1);
             continue;
         }
 
@@ -2287,7 +2291,7 @@ int backup_files_from_storage_server(char *storage_ip, int storage_port, json_ob
         }
 
         // Ensure directory exists for this file
-        ensure_path_exists(full_dest_path);
+        ensure_path_exists(full_dest_path,0);
 
         // Send read request for this file
         json_object* read_request = json_object_new_object();
@@ -2331,7 +2335,7 @@ int backup_files_from_storage_server(char *storage_ip, int storage_port, json_ob
                 break;
             }
             else if (strcmp(status, "success") == 0) {
-                if (stop == 0) break;
+                if (stop == 1) break;
                 
                 char temp_buffer[2*CHUNK_SIZE];
                 if (json_object_object_get_ex(response, "data", &data_object)) {
