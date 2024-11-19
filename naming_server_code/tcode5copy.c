@@ -209,9 +209,9 @@ void remove_server_from_node(TreeNode* node, const int server_id) {
     for (int i = 0; i < node->server_count; i++) {
         if (node->storage_servers[i].sid == server_id) {
             node->storage_servers[i].sid = -1;
-            // for(int j = i + 1; j < node->server_count; j ++) {
-            //     node->storage_servers[j - 1] = node->storage_servers[j];
-            // }
+            for(int j = i + 1; j < node->server_count; j ++) {
+                node->storage_servers[j - 1] = node->storage_servers[j];
+            }
             node->server_count --;
             return;  
         }
@@ -1889,7 +1889,6 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
                 p_request.server_associated->processing_requests[load] = p_request;
 
                 char* path = (char*)malloc(sizeof(char) * MAX_PATH_LENGTH);
-                sprintf(path, "replica_%d", existing_node->storage_servers[1].sid_of_backup);
 
                 json_object_object_add(response, "ip", json_object_new_string(nm->storage_servers[existing_node->storage_servers[1].sid - 1]->ip));
                 json_object_object_add(response, "client_port", json_object_new_int(nm->storage_servers[existing_node->storage_servers[1].sid - 1]->client_port));
@@ -1942,12 +1941,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
 
         Request p_request;
         p_request.client_associated = cl;
-
-        if(existing_node->storage_servers[0].sid == -1)
-            p_request.server_associated = nm->storage_servers[existing_node->storage_servers[0].sid - 1];
-        else
-            p_request.server_associated = nm->storage_servers[existing_node->storage_servers[1].sid - 1];
-
+        p_request.server_associated = nm->storage_servers[existing_node->storage_servers[0].sid - 1];
         p_request.reqid = req_id_client;
         p_request.corr_node = existing_node;
 
@@ -1957,22 +1951,18 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
         int load = p_request.server_associated->current_load ++;
         p_request.server_associated->processing_requests[load] = p_request;
 
-        // json_object_object_add(response, "ip", json_object_new_string(nm->storage_servers[existing_node->storage_servers[0].sid - 1]->ip));
-        // json_object_object_add(response, "client_port", json_object_new_int(nm->storage_servers[existing_node->storage_servers[0].sid - 1]->client_port));
-        json_object_object_add(response, "ip", json_object_new_string(p_request.server_associated->ip));
-        json_object_object_add(response, "client_port", json_object_new_int(p_request.server_associated->client_port));
+        json_object_object_add(response, "ip", json_object_new_string(nm->storage_servers[existing_node->storage_servers[0].sid - 1]->ip));
+        json_object_object_add(response, "client_port", json_object_new_int(nm->storage_servers[existing_node->storage_servers[0].sid - 1]->client_port));
         // json_object_object_add(response, "client_id", json_object_new_int(cl->id - 1));
         send_message(client_socket, response);
        
         //********************************************** */
-        if(existing_node->storage_servers[0].sid != -1){
-            StorageServer* ss = nm->storage_servers[existing_node->storage_servers[0].sid - 1];
-            if((ss->backup1 || ss->backup2) && strcmp(operation, "write") == 0){
-                ss->pending_backup_paths[ss->pending_backup_cnt] = (char *) malloc(sizeof(char) * MAX_PATH_LENGTH);
-                strcpy(ss->pending_backup_paths[ss->pending_backup_cnt], path);
-                ss->types_backup_paths[ss->pending_backup_cnt] = 0;
-                ss->pending_backup_cnt++;
-            }
+        StorageServer* ss = nm->storage_servers[existing_node->storage_servers[0].sid - 1];
+        if((ss->backup1 || ss->backup2) && strcmp(operation, "write") == 0){
+            ss->pending_backup_paths[ss->pending_backup_cnt] = (char *) malloc(sizeof(char) * MAX_PATH_LENGTH);
+            strcpy(ss->pending_backup_paths[ss->pending_backup_cnt], path);
+            ss->types_backup_paths[ss->pending_backup_cnt] = 0;
+            ss->pending_backup_cnt++;
         }
 
     }else    
@@ -2113,8 +2103,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
             return -1;
         }
 
-        
-        int enode_server = (existing_node->storage_servers[0].sid != -1) ? (existing_node->storage_servers[0].sid - 1) : existing_node->storage_servers[1].sid - 1;
+        int enode_server = existing_node->storage_servers[0].sid - 1;
         fprintf(stderr, "%d\n", enode_server);
 
 
@@ -2228,9 +2217,9 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
             // free(cl);
             return -1;
         }
-
-        int dnode = (dest_node->storage_servers[0].sid == -1) ? (dest_node->storage_servers[0].sid - 1) : (dest_node->storage_servers[1].sid - 1);
-        int snode = (source_node->storage_servers[0].sid == -1) ? (source_node->storage_servers[0].sid - 1) : (source_node->storage_servers[1].sid - 1);
+     
+        int dnode = dest_node->storage_servers[0].sid - 1;
+        int snode = source_node->storage_servers[0].sid - 1;
 
         Request p_request;
         p_request.client_associated = cl;

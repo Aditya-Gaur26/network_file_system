@@ -627,8 +627,8 @@ void* handle_backup(void* arg){
 
     send_message(ss->backup1->sock, request);
     send_message(ss->backup2->sock, request);
-    json_object_put(request);
-
+    // json_object_put(request);
+    
     return 0;
 }
 
@@ -671,7 +671,7 @@ int handle_path_replication(int primary_ss_id){
            
             send_message(replica1->sock, request);
             send_message(replica2->sock, request);
-            json_object_put(request);
+            // json_object_put(request);
 
             request = json_object_new_object();
             json_object* paths_array = json_object_new_array();
@@ -693,7 +693,7 @@ int handle_path_replication(int primary_ss_id){
 
             send_message(replica1->sock, request);
             send_message(replica2->sock, request);
-            json_object_put(request);
+            // json_object_put(request);
             
             replica1->backup_of[replica1->backup_load++] = ss;
             replica2->backup_of[replica2->backup_load++] = ss;

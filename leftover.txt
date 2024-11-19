@@ -1,3 +1,0 @@
-1) testing for more than 2 storage servers
-2) sometimes on death of ns ,, ss does not die
-3) chugh code sometimes says file is being written when we try to write again

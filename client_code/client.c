@@ -235,6 +235,9 @@ void base64_decode(const char *input, size_t input_len, unsigned char *output, s
         *output_len = output_pos;
     }
 }
+
+int receive_from_replica =0;
+char replica_dir[1000];
 void send_final_ack_to_ns(int nm_sock, char *operation)
 {
     json_object *response_to_ns = json_object_new_object();
@@ -595,7 +598,7 @@ int get_ss_ip_port(int nm_sock, char *ss_ip, int *ss_port)
     {
         strncpy(ss_ip, json_object_get_string(ip_obj), INET_ADDRSTRLEN);
         *ss_port = json_object_get_int(port_obj);
-        client_id = json_object_get_int(client_id_object);
+        // client_id = json_object_get_int(client_id_object);
         return 0;
     }
     else
@@ -638,13 +641,28 @@ int read_opn(int nm_sock, const char *path, char *ss_ip, int *ss_port)
         else
             return -1;
 
-        if (get_ss_ip_port(nm_sock, ss_ip, ss_port) == 0)
+       
+
+        json_object *response = receive_response_partial(nm_sock);
+        json_object *ip_obj, *port_obj,*replica_dir_object;
+       
+        if (json_object_object_get_ex(response, "ip", &ip_obj) &&
+            json_object_object_get_ex(response, "client_port", &port_obj))
         {
+            strncpy(ss_ip, json_object_get_string(ip_obj), INET_ADDRSTRLEN);
+            *ss_port = json_object_get_int(port_obj);
+            
+            if(json_object_object_get_ex(response,"receive_from_replica",&replica_dir_object)){
+                receive_from_replica =1;
+                strcpy(replica_dir,json_object_get_string(replica_dir_object));
+            }
             return 0;
         }
-
         else
+        {
+            printf("Not able to get storage ip adnd port\n");
             return -1;
+        }
     }
     else
     {
@@ -685,13 +703,12 @@ int write_opn(int nm_sock, const char *path, char *ss_ip, int *ss_port, int sync
     {
         printf("Initial ACK received from Naming Server..\n");
         json_object *client_id_object;
-        
+
         if (json_object_object_get_ex(initial_ack, "client_id", &client_id_object))
         {
-        
+
             client_id = json_object_get_int(client_id_object);
             printf("%d\n", client_id);
-        
         }
         else
             return -1;
@@ -1115,36 +1132,6 @@ int stream_opn(int nm_sock, char *path, char *ss_ip, int *ss_port)
     }
 }
 
-// void *wait_on_naming_server(void *arg)
-// {
-//     int nm_sock = *(int *)arg; // Unpack the nm_sock argument
-//     printf("Received nm_sock: %d\n", nm_sock);
-
-//     json_object *response = receive_response(nm_sock);
-//     json_object *statobject;
-//     if (json_object_object_get_ex(response, "status", &statobject))
-//     {
-//         const char *statusstr = json_object_get_string(statobject);
-//         if (strcmp(statusstr, "success") == 0)
-//         {
-//             printf("SUCESS! Request completed\n");
-//         }
-//         else if (strcmp(statusstr, "failure") == 0)
-//         {
-//             printf("Failure!! Request could not be completed\n");
-//             json_object *errorobj;
-//             if (json_object_object_get_ex(response, "error", &errorobj))
-//             {
-//                 const char *errorstr = json_object_get_string(errorobj);
-//                 printf("%s\n", errorstr);
-//             }
-//         }
-//     }
-//     // Perform operations using nm_sock
-
-//     return NULL;
-// }
-
 void send_chunks_to_ss(int sock, char *path, char *data)
 {
     int count = 0;
@@ -1252,6 +1239,31 @@ void receive_print_chunk(int sock, char *path)
     printf("%s\n", respstring);
 }
 
+void client_ss_read_from_replica(int sock, char *path, int nm_sock, char *operation)
+{
+    json_object *request = json_object_new_object();
+    json_object_object_add(request, "request_code", json_object_new_string("read2"));
+    char new_path[1024];
+    snprintf(new_path, sizeof(new_path), "%s/%s", replica_dir, path);
+    json_object_object_add(request, "path", json_object_new_string(new_path));
+    json_object_object_add(request, "request_id", json_object_new_int(reqid));
+    json_object_object_add(request, "client_id", json_object_new_int(client_id));
+
+    const char *request_str = json_object_to_json_string(request);
+
+    uint32_t length = strlen(request_str);
+    uint32_t network_length = htonl(length);
+
+    send(sock, &network_length, sizeof(network_length), 0);
+    send(sock, request_str, length, 0);
+
+    receive_print_chunk(sock, path);
+    close(sock);
+    send_final_ack_to_ns(nm_sock, operation);
+    return;
+}
+
+
 void client_ss_read(int sock, char *path, int nm_sock, char *operation)
 {
     json_object *request = json_object_new_object();
@@ -1351,13 +1363,6 @@ void client_ss_write_file(int sock, char *path, int appendflag, int syncflag, ch
 
             send_chunks_from_file(sock, write_file_path);
             sendstop(sock);
-            // thread create separate function calling here
-            // pthread_t thread;
-            // if (pthread_create(&thread, NULL, wait_on_naming_server, &nm_sock) != 0)
-            // {
-            //     printf("Failed to create thread\n");
-            //     return;
-            // }
         }
         else if (strcmp(init_status, "failure") == 0)
         {
@@ -1385,13 +1390,15 @@ void client_ss_write_file(int sock, char *path, int appendflag, int syncflag, ch
                     printf("Received STOP packet..\n");
                 }
             }
-            if(json_object_object_get_ex(response,"status",&status_object)){
+            if (json_object_object_get_ex(response, "status", &status_object))
+            {
                 char status[100];
-                json_object*error_object;
-                strcpy(status,json_object_get_string(status_object));
-                printf("%s\n",status);
-                if(strcmp(status,"failure") && json_object_object_get_ex(response,"error",&error_object)){
-                    printf("%s\n",json_object_get_string(error_object));
+                json_object *error_object;
+                strcpy(status, json_object_get_string(status_object));
+                printf("%s\n", status);
+                if (strcmp(status, "failure") && json_object_object_get_ex(response, "error", &error_object))
+                {
+                    printf("%s\n", json_object_get_string(error_object));
                 }
             }
         }
@@ -1448,13 +1455,6 @@ void client_ss_write(int sock, char *path, int appendflag, int syncflag, char *d
             pending = 1;
             send_chunks_to_ss(sock, path, data);
             sendstop(sock);
-            // thread create separate function calling here
-            // pthread_t thread;
-            // if (pthread_create(&thread, NULL, wait_on_naming_server, &nm_sock) != 0)
-            // {
-            //     printf("Failed to create thread\n");
-            //     return;
-            // }
         }
         else if (strcmp(init_status, "failure") == 0)
         {
@@ -1644,179 +1644,194 @@ void client_ss_stream(int sock, char *path, int nm_sock, char *operation)
     return;
 }
 
-int main()
+int main(int argc,char* argv[])
 {
-    char nm_ip[INET_ADDRSTRLEN] = "192.168.149.211";
-    int nm_port;
-    nm_port = NM_PORT;
     char operation[BUFFER_SIZE];
     reqid = 1;
     FILE *write_file;
-    nm_sock = connect_to_naming_server(nm_ip, nm_port);
-    if (nm_sock <= 0)
-    {
-        printf("\nCouldn't connect to Naming Server properly!!\n");
+    if (argc != 3) {
+        printf("Usage: %s ", argv[0]);
+        return 1;
     }
-    else {
-    while (1)
+    char* nm_ip=argv[1];
+    int nm_port=atoi(argv[2]);
+    struct sockaddr_in sa;
+    int result = inet_pton(AF_INET, nm_ip, &(sa.sin_addr));
+    if (result == 1)
     {
-        pending = 0;
-        int result = 1;
-        int filefg = 0;
-        char path[BUFFER_SIZE];
-        int syncflag;
-        char src[BUFFER_SIZE];
-        char dest[BUFFER_SIZE];
-        char name[BUFFER_SIZE];
-        int appendfg;
-        char choice[BUFFER_SIZE];
-        char data[MAX_SIZE];
-        char file_path[BUFFER_SIZE];
-        int r1 = 1;
-        int connect_only_once_flag = 0;
-        // FILE* write_file;
-        printf("Enter the operation (read,write,delete,create,copy,stream,getfileinfo or list).. Enter STOP to exit : \n");
-        scanf("%s", operation);
-        if (strcmp(operation, "read") == 0)
+        printf("The IP address is valid: %s\n", nm_ip);
+        nm_sock = connect_to_naming_server(nm_ip, nm_port);
+        if (nm_sock <= 0)
         {
-
-            printf("Give path: ");
-            scanf("%s", path);
-            result = read_opn(nm_sock, path, ss_ip, &ss_port);
-        }
-        else if (strcmp(operation, "write") == 0)
-        {
-
-            printf("Give path: ");
-            scanf("%s", path);
-            printf("Priority write or not? type 0 or 1\n");
-            scanf("%d", &syncflag);
-            printf("Want to append or overwrite? type 0 or 1\n");
-            scanf("%d", &appendfg);
-            printf("What's your choice? Read from file or give input (String or File): ");
-            scanf("%s", choice);
-            if (strcmp(choice, "String") == 0 || strcmp(choice, "string") == 0)
-            {
-                printf("Enter data\n");
-                scanf("%s", data);
-            }
-            else if (strcmp(choice, "File") == 0 || strcmp(choice, "file") == 0)
-            {
-                filefg = 1;
-                printf("Please provide path of file to be read: ");
-                scanf("%s", file_path);
-
-                write_file = fopen(file_path, "rb");
-                if (write_file == NULL)
-                {
-                    printf("please enter a valid file path\n");
-                    continue;
-                }
-                // printf("%d\n",filefg);
-            }
-            result = write_opn(nm_sock, path, ss_ip, &ss_port, syncflag, appendfg);
-        }
-        else if (strcmp(operation, "delete") == 0)
-        {
-
-            printf("Give path: ");
-            scanf("%s", path);
-            r1 = delete_opn(nm_sock, path);
-            // close(nm_sock);
-        }
-        else if (strcmp(operation, "create") == 0)
-        {
-
-            printf("Give path:\n");
-            scanf("%s", path);
-            strcat(path, "/");
-            printf("Give name:\n");
-            scanf("%s", name);
-            int flag;
-            printf("Enter 1 for creating directory or 0 for creating file\n");
-            scanf("%d", &flag);
-            r1 = create_opn(nm_sock, path, name, flag);
-            // close(nm_sock);
-        }
-        else if (strcmp(operation, "copy") == 0)
-        {
-
-            printf("Give src path: ");
-            scanf("%s", src);
-            printf("Give dest: ");
-            scanf("%s", dest);
-            r1 = copy_opn(nm_sock, src, dest);
-            // close(nm_sock);
-        }
-        else if (strcmp(operation, "stream") == 0)
-        {
-
-            printf("Give audio file path: \n");
-            scanf("%s", path);
-            result = stream_opn(nm_sock, path, ss_ip, &ss_port);
-        }
-        else if (strcmp(operation, "getfileinfo") == 0)
-        {
-            printf("Give path\n");
-            scanf("%s", path);
-            result = file_info(nm_sock, path, ss_ip, &ss_port);
-        }
-        else if (strcmp(operation, "list") == 0)
-        {
-
-            r1 = list_all(nm_sock);
-            // close(nm_sock);
-        }
-        else if (strcmp(operation, "STOP") == 0)
-        {
-            break;
+            printf("\nCouldn't connect to Naming Server properly!!\n");
         }
         else
-            printf("Invalid operation!! Please enter valid operation.\n");
-        if (result == 0)
         {
-            int ss_sock = connect_to_storage_server(ss_ip, &ss_port);
-            if (ss_sock <= 0)
+            while (1)
             {
-                printf("Couldn't connect to Storage Sever properly!!\n");
-                continue;
-            }
-            if (strcmp(operation, "read") == 0)
-            {
-                client_ss_read(ss_sock, path, nm_sock, operation);
-            }
-            else if (strcmp(operation, "write") == 0)
-            {
-                if (!filefg)
+                pending = 0;
+                receive_from_replica =0;
+                int result = 1;
+                int filefg = 0;
+                char path[BUFFER_SIZE];
+                int syncflag;
+                char src[BUFFER_SIZE];
+                char dest[BUFFER_SIZE];
+                char name[BUFFER_SIZE];
+                int appendfg;
+                char choice[BUFFER_SIZE];
+                char data[MAX_SIZE];
+                char file_path[BUFFER_SIZE];
+                int r1 = 1;
+                int connect_only_once_flag = 0;
+                // FILE* write_file;
+                printf("Enter the operation (read,write,delete,create,copy,stream,getfileinfo or list).. Enter STOP to exit : \n");
+                scanf("%s", operation);
+                if (strcmp(operation, "read") == 0)
                 {
-                    client_ss_write(ss_sock, path, appendfg, syncflag, data, nm_sock, operation);
+
+                    printf("Give path: ");
+                    scanf("%s", path);
+                    result = read_opn(nm_sock, path, ss_ip, &ss_port);
+                }
+                else if (strcmp(operation, "write") == 0)
+                {
+
+                    printf("Give path: ");
+                    scanf("%s", path);
+                    printf("Priority write or not? type 0 or 1\n");
+                    scanf("%d", &syncflag);
+                    printf("Want to append or overwrite? type 0 or 1\n");
+                    scanf("%d", &appendfg);
+                    printf("What's your choice? Read from file or give input (String or File): ");
+                    scanf("%s", choice);
+                    if (strcmp(choice, "String") == 0 || strcmp(choice, "string") == 0)
+                    {
+                        printf("Enter data\n");
+                        scanf("%s", data);
+                    }
+                    else if (strcmp(choice, "File") == 0 || strcmp(choice, "file") == 0)
+                    {
+                        filefg = 1;
+                        printf("Please provide path of file to be read: ");
+                        scanf("%s", file_path);
+
+                        write_file = fopen(file_path, "rb");
+                        if (write_file == NULL)
+                        {
+                            printf("please enter a valid file path\n");
+                            continue;
+                        }
+                        // printf("%d\n",filefg);
+                    }
+                    result = write_opn(nm_sock, path, ss_ip, &ss_port, syncflag, appendfg);
+                }
+                else if (strcmp(operation, "delete") == 0)
+                {
+
+                    printf("Give path: ");
+                    scanf("%s", path);
+                    r1 = delete_opn(nm_sock, path);
+                    // close(nm_sock);
+                }
+                else if (strcmp(operation, "create") == 0)
+                {
+
+                    printf("Give path:\n");
+                    scanf("%s", path);
+                    strcat(path, "/");
+                    printf("Give name:\n");
+                    scanf("%s", name);
+                    int flag;
+                    printf("Enter 1 for creating directory or 0 for creating file\n");
+                    scanf("%d", &flag);
+                    r1 = create_opn(nm_sock, path, name, flag);
+                    // close(nm_sock);
+                }
+                else if (strcmp(operation, "copy") == 0)
+                {
+
+                    printf("Give src path: ");
+                    scanf("%s", src);
+                    printf("Give dest: ");
+                    scanf("%s", dest);
+                    r1 = copy_opn(nm_sock, src, dest);
+                    // close(nm_sock);
+                }
+                else if (strcmp(operation, "stream") == 0)
+                {
+
+                    printf("Give audio file path: \n");
+                    scanf("%s", path);
+                    result = stream_opn(nm_sock, path, ss_ip, &ss_port);
+                }
+                else if (strcmp(operation, "getfileinfo") == 0)
+                {
+                    printf("Give path\n");
+                    scanf("%s", path);
+                    result = file_info(nm_sock, path, ss_ip, &ss_port);
+                }
+                else if (strcmp(operation, "list") == 0)
+                {
+
+                    r1 = list_all(nm_sock);
+                    // close(nm_sock);
+                }
+                else if (strcmp(operation, "STOP") == 0)
+                {
+                    break;
                 }
                 else
+                    printf("Invalid operation!! Please enter valid operation.\n");
+                if (result == 0)
                 {
-                    client_ss_write_file(ss_sock, path, appendfg, syncflag, file_path, nm_sock, operation);
+                    int ss_sock = connect_to_storage_server(ss_ip, &ss_port);
+                    if (ss_sock <= 0)
+                    {
+                        printf("Couldn't connect to Storage Sever properly!!\n");
+                        continue;
+                    }
+                    if (strcmp(operation, "read") == 0)
+                    {
+                        if(receive_from_replica == 0)client_ss_read(ss_sock, path, nm_sock, operation);
+                        else client_ss_read_from_replica(ss_sock,path,nm_sock,operation);
+                    }
+                    else if (strcmp(operation, "write") == 0)
+                    {
+                        if (!filefg)
+                        {
+                            client_ss_write(ss_sock, path, appendfg, syncflag, data, nm_sock, operation);
+                        }
+                        else
+                        {
+                            client_ss_write_file(ss_sock, path, appendfg, syncflag, file_path, nm_sock, operation);
+                        }
+                    }
+                    else if (strcmp(operation, "getfileinfo") == 0)
+                    {
+                        client_ss_fileinfo(ss_sock, path, nm_sock, operation);
+                    }
+                    else if (operation, "stream")
+                    {
+                        client_ss_stream(ss_sock, path, nm_sock, operation);
+                    }
                 }
-            }
-            else if (strcmp(operation, "getfileinfo") == 0)
-            {
-                client_ss_fileinfo(ss_sock, path, nm_sock, operation);
-            }
-            else if (operation, "stream")
-            {
-                client_ss_stream(ss_sock, path, nm_sock, operation);
+                else if (result == -1)
+                {
+                    printf("Sorry..Request could not be completed\n");
+                    // close(nm_sock);
+                }
+                else if (r1 == -1)
+                {
+                    printf("Sorry.. Please try again\n");
+                }
+                reqid++;
             }
         }
-        else if (result == -1)
-        {
-            printf("Sorry..Request could not be completed\n");
-            // close(nm_sock);
-        }
-        else if (r1 == -1)
-        {
-            printf("Sorry.. Please try again\n");
-        }
-        reqid++;
     }
+    else
+    {
+        printf("Invalid IP address format!\n");
     }
-   // printf("Client does not want to send requests anymore..\n");
     return 0;
 }

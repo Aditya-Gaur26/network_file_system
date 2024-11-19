@@ -109,6 +109,7 @@ void ensure_path_exists(char* path,int is_directory);
 int is_path_in_current_directory(char* given_path);
 void print_binary(const unsigned char *data, size_t length);
 int backup_files_from_storage_server(char *storage_ip, int storage_port, json_object *paths_array, json_object *types_array,char*parent_directory);
+int copy_replica_from_another_storage_server(char*storage_ip,int storage_port,char*path,char*destination_path,char*replica_path);
 
 json_object* receive_request(int socket) {
     uint32_t length;
@@ -228,7 +229,7 @@ int main(int argc, char* argv[]) {
     json_object*client_id_object;
     int client_id=-1;
     while (1) {
-        
+        printf("waiting\n");
         json_object* nm_response = receive_request(nm_socket);
         if(nm_response == NULL){
             
@@ -251,7 +252,8 @@ int main(int argc, char* argv[]) {
             if(strcmp("create_empty",request_code) == 0){
                 json_object*path_object;
                 json_object*type_obj;
-               
+                json_object*ssid_object;
+                int ssid;
                 bool is_directory; // 1 for directory 0 for file 
 
                 if(json_object_object_get_ex(nm_response,"client_id",&client_id_object)){
@@ -287,17 +289,22 @@ int main(int argc, char* argv[]) {
                     response_code = 0;
                 }
 
+                if(json_object_object_get_ex(nm_response,"ssid",&ssid_object)){
+                    ssid = json_object_get_int(ssid_object);
+                }
+                else ssid = -1;
+
                 int res = create_empty(path,is_directory);
                 if(res == 0){
                     response_code = 0;
                     strcpy(error,"path not created : may be server already has the same path");
                 }
                 if(res == 1){
-                    send_naming_work_to_ns("naming_server_related","success",error,request_id,client_id,"create_empty",path,-1);
+                    send_naming_work_to_ns("naming_server_related","success",error,request_id,client_id,"create_empty",path,ssid);
 
                 }
                 else if(res == -1){
-                    send_naming_work_to_ns("naming_server_related","failure",error,request_id,client_id,"create_empty",path,-1);
+                    send_naming_work_to_ns("naming_server_related","failure",error,request_id,client_id,"create_empty",path,ssid);
 
                 }
                 // json_object_put(path_object);
@@ -422,6 +429,93 @@ int main(int argc, char* argv[]) {
                 }
 
                 int res = copy_from_another_storage_server(storage_ip,storage_port,path,destination_path);
+                if(res == -1){
+                    response_code = 0;
+                    strcpy(error,"unable to copy from storage server");
+                }
+                if(response_code == 1){
+                    send_naming_work_to_ns("naming_server_related","success",error,request_id,client_id,"copy",path,storage_ss_id);
+
+                }
+                else {
+                    send_naming_work_to_ns("naming_server_related","failure",error,request_id,client_id,"copy",path,storage_ss_id);
+                }
+            
+                // // json_object_put(path_object);
+                // // json_object_put(storage_ip_object);
+                // // json_object_put(storage_port_object);
+                // // json_object_put(destination_path_object);
+
+                free(storage_ip);
+                free(destination_path);
+            }
+             else if(strcmp("copy1",request_code) == 0){
+                json_object*path_object;
+                json_object*storage_ip_object;
+                json_object*storage_port_object;
+                json_object*destination_path_object;
+                json_object*storage_ss_id_object;
+                char*storage_ip = malloc(sizeof(char)*40);
+                int storage_port;
+                int storage_ss_id;
+                char*destination_path = malloc(sizeof(char)*256);
+                
+                if(json_object_object_get_ex(nm_response,"client_id",&client_id_object)){
+                    client_id = json_object_get_int(client_id_object);
+                }
+                else{
+                    strcpy(error,"not able to extract client id");
+                    response_code=0;
+                }
+
+                if(json_object_object_get_ex(nm_response,"storage_path",&path_object)){
+                    strcpy(path,json_object_get_string(path_object));
+                }
+                else{
+                    response_code = 0;
+                    strcpy(error,"Not able to extract path for stored file");
+                }   
+
+                if(json_object_object_get_ex(nm_response,"storage_ip",&storage_ip_object)){
+                    strcpy(storage_ip,json_object_get_string(storage_ip_object));
+                }
+                else{
+                    response_code = 0;
+                    strcpy(error,"Not able to extract ip for storage server");
+                }
+                if(json_object_object_get_ex(nm_response,"storage_port",&storage_port_object)){
+                    storage_port = json_object_get_int(storage_port_object);
+                }
+                else{
+                    response_code = 0;
+                    strcpy(error,"Not able to extract port for storage server");
+                }
+                if(json_object_object_get_ex(nm_response,"destination_path",&destination_path_object)){
+                    strcpy(destination_path,json_object_get_string(destination_path_object));
+                    // if(!validate_path(destination_path)){
+                    //     strcpy(error,"destination path not valid");
+                    //     response_code =0;
+                    // }
+                    // add_base(&destination_path);
+                }
+
+                if(json_object_object_get_ex(nm_response,"request_id",&request_id_object)){
+                    request_id = json_object_get_int(request_id_object);
+                }
+                else{
+                    strcpy(error,"not able to extract request id");
+                    response_code = 0;
+                }
+
+                if(json_object_object_get_ex(nm_response,"ssid",&storage_ss_id_object)){
+                    storage_ss_id = json_object_get_int(storage_ss_id_object);
+                }
+                else{
+                    strcpy(error,"not able to extract storage server's ss_id");
+                    response_code = 0;
+                }
+
+                int res = copy_replica_from_another_storage_server(storage_ip,storage_port,path,"myserver/",destination_path);
                 if(res == -1){
                     response_code = 0;
                     strcpy(error,"unable to copy from storage server");
@@ -608,6 +702,48 @@ void* handle_single_client(void* arg) {
                     strcpy(error,"Invalid path");
                 }
                 add_base(&path);
+                
+            }
+            else{
+                strcpy(error,"not able to extract path");
+                response_code = 0;
+            }
+
+            
+            int res =-1;
+            if(response_code == 1){
+                res = read_file_for_client(error,client->client_fd,path);
+            }
+            else{
+                json_object*response = json_object_new_object();
+                json_object_object_add(response , "status",json_object_new_string("failure"));
+                json_object_object_add(response , "error",json_object_new_string(error));
+                json_object_object_add(response , "stop",json_object_new_int(1));
+                send_to_client(response,client->client_fd);
+                // // json_object_put(response);
+            }
+            // // json_object_put(path_object);
+        }
+        else if(strcmp("read2",request_code) == 0){
+            
+            if(json_object_object_get_ex(client_request,"client_id",&client_id_object)){
+                client_id = json_object_get_int(client_id_object);
+                 client->client_id =  client_id;
+            }
+            else{
+                strcpy(error,"not able to extract client id");
+                response_code=0;
+            }
+
+            json_object*path_object;
+            
+            if(json_object_object_get_ex(client_request,"path",&path_object)){
+                strcpy(path,json_object_get_string(path_object));
+                // if(!validate_path(path)){
+                //     response_code = 0;
+                //     strcpy(error,"Invalid path");
+                // }
+                // add_base(&path);
                 
             }
             else{
@@ -2090,6 +2226,182 @@ int copy_from_another_storage_server(char*storage_ip,int storage_port,char*path,
     
 }
 
+int copy_replica_from_another_storage_server(char*storage_ip,int storage_port,char*path,char*destination_path,char*replica_path){
+
+    int sock_fd, bytes_received, total_bytes = 0;
+    struct sockaddr_in server_addr;
+    FILE* dest_file = NULL;
+    
+    // Create socket
+    sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock_fd < 0) {
+        return -1;
+    }
+    
+    // Set up server address structure
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(storage_port);
+    if (inet_pton(AF_INET, storage_ip, &server_addr.sin_addr) <= 0) {
+        close(sock_fd);
+        return -1;
+    }
+    
+    // Connect to server
+    if (connect(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        close(sock_fd);
+        return -1;
+    } 
+
+    // First, send list request to get all paths
+    json_object* list_request = json_object_new_object();
+    json_object_object_add(list_request, "request_code", json_object_new_string("list_all"));
+    char new_path[1024]; // Temporary buffer for the new path
+    snprintf(new_path, sizeof(new_path), "%s%s",replica_path ,path);
+    json_object_object_add(list_request, "path", json_object_new_string(new_path));
+    
+    // Send list request
+    send_to_client(list_request, sock_fd);
+    
+    // Get response with file list
+    json_object* list_response = receive_request(sock_fd);
+    if (list_response == NULL) {
+        close(sock_fd);
+        return -1;
+    }
+    // Extract paths array from response
+    json_object* paths_array;
+    json_object* types_array;  // Array indicating if each path is file or directory
+    if (!json_object_object_get_ex(list_response, "paths", &paths_array) ||
+        !json_object_object_get_ex(list_response, "types", &types_array)) {
+        close(sock_fd);
+        return -1;
+    }
+    
+    ensure_path_exists(destination_path,0);
+    
+    // Iterate through each path and copy it
+    int success = 1;
+    int array_length = json_object_array_length(paths_array);
+    
+    for (int i = 0; i < array_length; i++) {
+        json_object* path_obj = json_object_array_get_idx(paths_array, i);
+        json_object* type_obj = json_object_array_get_idx(types_array, i);
+        
+        const char* relative_path = json_object_get_string(path_obj);
+        const char* type = json_object_get_string(type_obj);
+        
+        // Construct source and destination paths
+        char full_source_path[512];
+        char full_dest_path[512];
+        snprintf(full_source_path, sizeof(full_source_path), "%s/%s", path, relative_path);
+        snprintf(full_dest_path, sizeof(full_dest_path), "%s/%s", destination_path, relative_path);
+        printf("%s\n",full_dest_path);
+        if (strcmp(type, "directory") == 0) {
+            // If it's a directory, just ensure it exists
+            ensure_path_exists(full_dest_path,1);
+            continue;
+        }
+
+        // For files, create a new connection and copy content
+        int new_sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (new_sock_fd < 0) continue;
+
+        if (connect(new_sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+            close(new_sock_fd);
+            continue;
+        }
+
+        // Ensure directory exists for this file
+        ensure_path_exists(full_dest_path,0);
+
+        
+        // Send read request for this file
+        json_object* read_request = json_object_new_object();
+        json_object_object_add(read_request, "request_code", json_object_new_string("read"));
+        json_object_object_add(read_request, "path", json_object_new_string(full_source_path));
+        json_object_object_add(read_request, "client_id", json_object_new_int(-1));
+        
+        send_to_client(read_request, new_sock_fd);
+
+        // Copy file content
+        char buffer[100000];
+        strcpy(buffer, "");
+        int append_it = 0;
+        int res = 1;
+
+        // File copying logic...
+        while (1) {
+            json_object* response = receive_request(new_sock_fd);
+            if (response == NULL) {
+                res = 0;
+                break;
+            }
+
+            json_object* stop_object;
+            json_object* status_object;
+            json_object* error_object;
+            json_object* data_object;
+
+            int stop;
+            char status[100];
+            
+            if (!json_object_object_get_ex(response, "stop", &stop_object) ||
+                !json_object_object_get_ex(response, "status", &status_object)) {
+                res = 0;
+                break;
+            }
+
+            stop = json_object_get_int(stop_object);
+            strcpy(status, json_object_get_string(status_object));
+
+            if (strcmp(status, "failure") == 0) {
+                res = 0;
+                break;
+            }
+            else if (strcmp(status, "success") == 0) {
+                if (stop == 1) break;
+                
+                char temp_buffer[2*CHUNK_SIZE];
+                if (json_object_object_get_ex(response, "data", &data_object)) {
+                    strcpy(temp_buffer, json_object_get_string(data_object));
+                    strcat(buffer, temp_buffer);
+                    if (strlen(buffer) > 100000 - 10000) {
+                        simple_write_to_file(buffer, full_dest_path, append_it);
+                        append_it = 1;
+                        strcpy(buffer,"");
+                    }
+                }
+                else {
+                    res = 0;
+                    break;
+                }
+            }
+            else {
+                res = 0;
+                break;
+            }
+        }
+
+        if (res == 1) {
+            simple_write_to_file(buffer, full_dest_path, append_it);
+        }
+        else {
+            success = 0;
+        }
+
+        // json_object_put(read_request);
+        close(new_sock_fd);
+    }
+
+    printf("copying of data is complete\n");
+    // json_object_put(list_request);
+    // json_object_put(list_response);
+    close(sock_fd);
+    return success;
+    
+}
+
 int simple_write_to_file(char *buffer, char *path, int append) {
     // Determine the mode based on the append flag
     const char *mode = append ? "a" : "w";
@@ -2294,13 +2606,14 @@ int backup_files_from_storage_server(char *storage_ip, int storage_port, json_ob
     
     // Test connection to server
     if (connect(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        printf("%s %d\nhello",storage_ip,storage_port);
         close(sock_fd);
         return -1;
     }
     close(sock_fd); // Close test connection
     
    
-    
+    printf("2.5\n");
     // Iterate through each path and copy it
     int success = 1;
     int array_length = json_object_array_length(paths_array);
