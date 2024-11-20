@@ -1271,7 +1271,7 @@ void* handle_backup2(int sid){
 
     send_message(ss->backup1->sock, request);
     send_message(ss->backup2->sock, request);
-    // json_object_put(request);
+    // // json_object_put(request);
 
     fprintf(stderr, "hello....5\n");
 
@@ -1344,7 +1344,7 @@ int handle_path_replication(int primary_ss_id){
 
             send_message(replica1->sock, request);
             send_message(replica2->sock, request);
-            // json_object_put(request);
+            // // json_object_put(request);
 
             json_object *request1 = json_object_new_object();
             json_object* paths_array = json_object_new_array_ext(MAX_PATHS_PER_SERVER);
@@ -1373,7 +1373,7 @@ int handle_path_replication(int primary_ss_id){
             send_message(replica1->sock, request1);
             sleep(2);
             send_message(replica2->sock, request1);
-            // json_object_put(request);
+            // // json_object_put(request);
 
             fprintf(stderr, "%d -- 1\n", primary_ss_id);
            
@@ -1421,7 +1421,7 @@ int handle_storage_server_registration(int client_socket, json_object* request) 
         json_object_object_add(response, "status", json_object_new_string("error"));
         json_object_object_add(response, "message", json_object_new_string("Maximum storage servers reached"));
         send_message(client_socket, response);
-        json_object_put(response);
+        // json_object_put(response);
         pthread_mutex_unlock(&nm->lock);
         return -1;
     }
@@ -1447,7 +1447,7 @@ int handle_storage_server_registration(int client_socket, json_object* request) 
 
             send_message(client_socket, response_fail);
             return -1;
-            // json_object_put(response_fail);
+            // // json_object_put(response_fail);
         }
 
         if(ss == NULL) {
@@ -1525,7 +1525,7 @@ int handle_storage_server_registration(int client_socket, json_object* request) 
 
             // int ss_sock = create_socket_to_send_to(nm->storage_servers[dest_server]->ip, nm->storage_servers[dest_server]->nm_port);
             // send_message(ss_sock, request);
-            // json_object_put(request);
+            // // json_object_put(request);
 
             fprintf(stderr,"con4\n");
 
@@ -1691,7 +1691,7 @@ int handle_storage_server_registration(int client_socket, json_object* request) 
     json_object_object_add(response, "ss_id", json_object_new_int(ss->id)); // tell gaur.
 
     send_message(client_socket, response);
-    json_object_put(response);
+    // json_object_put(response);
 
     pthread_mutex_unlock(&nm->lock);
     return ss->id - 1;
@@ -1947,7 +1947,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
     json_object_object_add(initial_ack, "ack", json_object_new_int(1));
     json_object_object_add(initial_ack, "client_id", json_object_new_int(cl->id));
     send_message(client_socket, initial_ack);
-    json_object_put(initial_ack);
+    // json_object_put(initial_ack);
 
     const char* operation = json_object_get_string(operation_obj);
     json_object* response = json_object_new_object();
@@ -1964,7 +1964,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
             json_object_object_add(response, "status", json_object_new_string("error"));
             json_object_object_add(response, "message", json_object_new_string("no file location found!\n"));
             send_message(client_socket, response);
-            json_object_put(response);
+            // // json_object_put(response);
 
             pthread_mutex_unlock(&nm->lock);
             // free(cl);
@@ -1976,7 +1976,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
             json_object_object_add(response, "status", json_object_new_string("error"));
             json_object_object_add(response, "message", json_object_new_string("only read operation allowed on this path!\n"));
             send_message(client_socket, response);
-            json_object_put(response);
+            // // json_object_put(response);
 
             pthread_mutex_unlock(&nm->lock);
             // free(cl);
@@ -1989,11 +1989,18 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
 
             if(existing_node -> server_count > 1) {
                 p_request.server_associated = nm->storage_servers[existing_node->storage_servers[1].sid - 1];
+                if(p_request.server_associated == NULL){
+                    fprintf(stderr, "please chalja\n");
+                    p_request.server_associated = nm->storage_servers[existing_node->storage_servers[2].sid - 1];
+                }
+                if(p_request.server_associated == NULL) fprintf(stderr, "na chlra\n");
                 p_request.reqid = req_id_client;
                 p_request.corr_node = existing_node;
 
                 cl->pending_count ++;
                 cl->pending_requests[cl->pending_count - 1] = p_request;
+
+                fprintf(stderr, "chlra1\n");
 
                 int load = p_request.server_associated->current_load ++;
                 p_request.server_associated->processing_requests[load] = p_request;
@@ -2001,11 +2008,14 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
                 char* path = (char*)malloc(sizeof(char) * MAX_PATH_LENGTH);
                 sprintf(path, "replica_%d/", existing_node->storage_servers[1].sid_of_backup);
 
-                json_object_object_add(response, "ip", json_object_new_string(nm->storage_servers[existing_node->storage_servers[1].sid - 1]->ip));
-                json_object_object_add(response, "client_port", json_object_new_int(nm->storage_servers[existing_node->storage_servers[1].sid - 1]->client_port));
-                json_object_object_add(response, "receive_from_replica", json_object_new_int(nm->storage_servers[existing_node->storage_servers[1].sid - 1]->client_port));
+                json_object_object_add(response, "ip", json_object_new_string(p_request.server_associated->ip));
+                json_object_object_add(response, "client_port", json_object_new_int(p_request.server_associated->client_port));
+                json_object_object_add(response, "receive_from_replica", json_object_new_string(path));
                 // json_object_object_add(response, "client_id", json_object_new_int(cl->id - 1));
+
                 send_message(client_socket, response);
+
+                fprintf(stderr, "chlra\n");
 
                 pthread_mutex_unlock(&nm->lock);
                   return cl->id - 1;
@@ -2013,7 +2023,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
                 json_object_object_add(response, "status", json_object_new_string("error"));
                 json_object_object_add(response, "message", json_object_new_string("the requested path is a directory!\n"));
                 send_message(client_socket, response);
-                json_object_put(response);
+                // // json_object_put(response);
 
                 pthread_mutex_unlock(&nm->lock);
                   return -1;
@@ -2026,7 +2036,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
             json_object_object_add(response, "status", json_object_new_string("error"));
             json_object_object_add(response, "message", json_object_new_string("the requested path is a directory!\n"));
             send_message(client_socket, response);
-            json_object_put(response);
+            // json_object_put(response);
 
             pthread_mutex_unlock(&nm->lock);
             // free(cl);
@@ -2038,7 +2048,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
                 json_object_object_add(response, "status", json_object_new_string("error"));
                 json_object_object_add(response, "message", json_object_new_string("file is being written to!\n"));
                 send_message(client_socket, response);
-                json_object_put(response);
+                // json_object_put(response);
 
                 pthread_mutex_unlock(&nm->lock);
                 // free(cl);
@@ -2127,7 +2137,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
             json_object_object_add(response, "status", json_object_new_string("error"));
             json_object_object_add(response, "message", json_object_new_string("Path already exists"));
             send_message(client_socket, response);
-            json_object_put(response);
+            // json_object_put(response);
 
             pthread_mutex_unlock(&nm->lock);
             return -1;
@@ -2139,7 +2149,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
             json_object_object_add(response, "message", json_object_new_string("No suitable storage server found"));
 
             send_message(client_socket, response);
-            json_object_put(response);
+            // json_object_put(response);
             pthread_mutex_unlock(&nm->lock);
             return -1;
         } else {
@@ -2171,7 +2181,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
 
             // int ss_sock = create_socket_to_send_to(best_server->ip, best_server->nm_port);
             send_message(best_server->sock, request);
-            // json_object_put(request);
+            // // json_object_put(request);
 
             sprintf(path2, "replica_%d/", best_server->id);
             path2 = strcat(path2, path);
@@ -2192,7 +2202,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
             if(best_server->backup1) send_message(best_server->backup1->sock, request1);
             sleep(2);
             if(best_server->backup2) send_message(best_server->backup2->sock, request1);
-            // json_object_put(request1);
+            // // json_object_put(request1);
 
             free(path1);
             free(path2);
@@ -2217,7 +2227,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
             json_object_object_add(response, "status", json_object_new_string("error"));
             json_object_object_add(response, "message", json_object_new_string("No server with the path found!"));
             send_message(client_socket, response);
-            json_object_put(response);
+            // json_object_put(response);
 
             pthread_mutex_unlock(&nm->lock);
             return -1;
@@ -2263,9 +2273,9 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
 
         // int ss_sock = create_socket_to_send_to(nm->storage_servers[server_with_path]->ip, nm->storage_servers[server_with_path]->nm_port);
         // send_message(ss_sock, request);
-        // json_object_put(request);
+        // // json_object_put(request);
         send_message(nm->storage_servers[enode_server]->sock, request);
-        // json_object_put(request);
+        // // json_object_put(request);
 
         json_object *request_2 = json_object_new_object();
         json_object_object_add(request_2, "request_id", json_object_new_int(-1));
@@ -2278,7 +2288,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
         if(ss->backup1) send_message(ss->backup1->sock, request_2);
         sleep(2);
         if(ss->backup2) send_message(ss->backup2->sock, request_2);
-        // json_object_put(request);
+        // // json_object_put(request);
        
 
         // json_object *response1;
@@ -2299,7 +2309,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
         //     }
         // }
 
-        // json_object_put(response1);
+        // // json_object_put(response1);
         // close(ss_sock);
        
     }
@@ -2328,7 +2338,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
             json_object_object_add(response, "status", json_object_new_string("error"));
             json_object_object_add(response, "message", json_object_new_string("No server with the source path found!"));
             send_message(client_socket, response);
-            json_object_put(response);
+            // json_object_put(response);
 
             pthread_mutex_unlock(&nm->lock);
             // free(cl);
@@ -2341,7 +2351,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
             json_object_object_add(response, "status", json_object_new_string("error"));
             json_object_object_add(response, "message", json_object_new_string("No server with the dest path found!"));
             send_message(client_socket, response);
-            json_object_put(response);
+            // json_object_put(response);
 
             pthread_mutex_unlock(&nm->lock);
             // free(cl);
@@ -2378,12 +2388,12 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
 
         // int ss_sock = create_socket_to_send_to(nm->storage_servers[dest_server]->ip, nm->storage_servers[dest_server]->nm_port);
         // send_message(ss_sock, request);
-        // json_object_put(request);
+        // // json_object_put(request);
 
         fprintf(stderr, "hello\n");
 
         send_message(nm->storage_servers[dnode]->sock, request);
-        // json_object_put(request);       
+        // // json_object_put(request);       
 
         fprintf(stderr, "hello2\n");
         // size_t path_len = strlen(path2);
