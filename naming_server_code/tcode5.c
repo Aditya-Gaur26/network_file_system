@@ -653,6 +653,7 @@ char* get_local_ip() {
 void* handle_connection(void* arg) {
     int client_socket = *((int*)arg);
     free(arg);
+    fprintf(stderr,"con1\n");
 
     json_object* request = receive_request(client_socket);
     if (request == NULL) {
@@ -660,6 +661,8 @@ void* handle_connection(void* arg) {
         close(client_socket);
         return NULL;
     }
+    fprintf(stderr,"con1\n");
+
 
     json_object* type_obj;
     if (json_object_object_get_ex(request, "type", &type_obj)) {
@@ -668,8 +671,11 @@ void* handle_connection(void* arg) {
         fprintf(stderr, "%s\n", type);        
         if (strcmp(type, "storage_server_register") == 0) {
             int sid = -1;
-            if((sid = handle_storage_server_registration(client_socket, request)) != -1) {
-            
+            fprintf(stderr,"con2\n");
+
+         if((sid = handle_storage_server_registration(client_socket, request)) != -1) {
+                fprintf(stderr,"con3\n");
+
           //******************************************************** */
                 if(nm->storage_server_count == 3){
                     fprintf(stderr, "started both\n");
@@ -882,14 +888,17 @@ void* handle_connection(void* arg) {
 
                                 }
                                 else if(strcmp(req_operation, "copy") == 0){
+                                    fprintf(stderr,"1\n");
                                     TreeNode* node = NULL;
                                     for(int i = 0; i < nm->storage_servers[sid]->current_load; i ++) {
                                         if(nm->storage_servers[sid]->processing_requests[i].reqid != -1 && nm->storage_servers[sid]->processing_requests[i].reqid == client_request_id) {
                                             node = nm->storage_servers[sid]->processing_requests[i].corr_node;
                                         }
                                     }  
-
+                                    fprintf(stderr,"2\n");
                                     if(node != NULL){
+                                        fprintf(stderr,"3\n");
+
                                         // add_server_to_subtree(node, sid, 0);
                                         fprintf(stderr, "%s\n", req_pth);
                                         TreeNode *src_node = find_node(nm->root, req_pth);
@@ -1095,7 +1104,7 @@ void* handle_connection(void* arg) {
                         // Clean up
                         free(path_depths);
 
-                        // close(nm->storage_servers[sid]->sock);
+                        close(nm->storage_servers[sid]->sock);
                         //************************************** */
                         nm->storage_servers[sid]->active = 0;
                         break;
@@ -1274,7 +1283,9 @@ void* handle_backup(void *arg){
     
     fprintf(stderr, "sid %d\n", sid);
 
-    handle_backup2(sid);
+    while(1){
+        handle_backup2(sid);
+    }
 }
 
 // Function to handle replication for a path
@@ -1313,7 +1324,7 @@ int handle_path_replication(int primary_ss_id){
             // json_object_object_add(request, "storage_port", json_object_new_int(ss->client_port));
             // json_object_object_add(request, "ssid", json_object_new_int(primary_ss_id));
             char path[MAX_PATH_LENGTH];
-            sprintf(path, "replica_%d", primary_ss_id);
+            sprintf(path, "replica_%d/", primary_ss_id);
             bool is_dir = true;
 
             fprintf(stderr, "%s\n", path);
@@ -1516,8 +1527,13 @@ int handle_storage_server_registration(int client_socket, json_object* request) 
             // send_message(ss_sock, request);
             // json_object_put(request);
 
+            fprintf(stderr,"con4\n");
+
             send_message(nm->storage_servers[dnode]->sock, request);
+            fprintf(stderr,"con5\n");
+
             return ss->id - 1;
+
         }
     }else {
         bool is_found_in_queue = false;
@@ -1725,6 +1741,10 @@ StorageServer* find_best_storage_server_for_creation(const char* path) {
     int min_load = INT_MAX;
    
     // Split the path into components
+    fprintf(stderr, "path before my server:%s\n", path);
+    path = path + 9;
+    fprintf(stderr, "path after my server:%s\n", path);
+
     char* components[MAX_PATH_LENGTH];
     int component_count;
     parse_path_components(path, components, &component_count);
@@ -1732,10 +1752,15 @@ StorageServer* find_best_storage_server_for_creation(const char* path) {
     // Start from root and traverse down as far as possible
     TreeNode* current = nm->root;
     TreeNode* deepest_match = nm->root;  // Keep track of deepest matching node
+    
+    for(int i = 0; i < component_count; i++){
+        printf("%s.........\n", components[i]);
+    }
    
     for (int i = 0; i < component_count; i++) {
         int found = 0;
         for (int j = 0; j < current->child_count; j++) {
+            printf("children: %s...", get_node_path(current->children[j]));
             if (current->children[j] &&
                 strcmp(current->children[j]->name, components[i]) == 0) {
                 current = current->children[j];
@@ -1748,9 +1773,12 @@ StorageServer* find_best_storage_server_for_creation(const char* path) {
             break;  // Stop traversing if component not found
         }
     }
+    fprintf(stderr, "%s...\n", get_node_path(deepest_match));
 
     // First try servers directly attached to the deepest matching node
     if (deepest_match->server_count > 0) {
+        fprintf(stderr, "%s........\n", get_node_path(deepest_match));
+
         for (int i = 0; i < deepest_match->server_count; i++) {
             int server_id = deepest_match->storage_servers[i].sid;
             if (server_id <= 0 || server_id > nm->storage_server_count) {
@@ -1766,6 +1794,7 @@ StorageServer* find_best_storage_server_for_creation(const char* path) {
        
         // Clean up components before returning if we found a server
         if (best_server) {
+            // fprintf(stderr, "%s...\n", get_node_path(best_server));
             for (int i = 0; i < component_count; i++) {
                 free(components[i]);
             }
@@ -1809,6 +1838,87 @@ StorageServer* find_best_storage_server_for_creation(const char* path) {
 
     return best_server;
 }
+
+// StorageServer* find_best_storage_server_for_creation(const char* path) {
+//     StorageServer* best_server = NULL;
+//     int min_load = INT_MAX;
+    
+//     // First, try to find servers that host parent directories
+//     TreeNode* parent_node = NULL;
+//     char parent_path[MAX_PATH_LENGTH];
+//     strncpy(parent_path, path, MAX_PATH_LENGTH - 1);
+    
+//     // Get parent path by removing last component
+//     char* last_slash = strrchr(parent_path, '/');
+//     if (last_slash != NULL) {
+//         if (last_slash == parent_path) {
+//             // Parent is root
+//             parent_path[1] = '\0';
+//         } else {
+//             *last_slash = '\0';
+//         }
+//         parent_node = lru_cache_get(cache, path);
+//         if(parent_node == NULL) {
+//             parent_node = find_node(nm->root, path);
+//             if(parent_node != NULL)
+//                 lru_cache_put(cache, path, parent_node);
+//         }
+//         // parent_node = find_node(nm->root, parent_path);
+//     }
+    
+//     if (parent_node != NULL) {
+//         // First preference: Use servers that host the parent directory
+//         for (int i = 0; i < parent_node->server_count; i++) {
+//             int server_id = parent_node->storage_servers[i].sid;
+//             StorageServer* ss = nm->storage_servers[server_id - 1];
+            
+//             if (ss->active && ss->current_load < min_load) {
+//                 min_load = ss->current_load;
+//                 best_server = ss;
+//             }
+//         }
+//     }
+    
+//     // If no suitable server found hosting parent directory,
+//     // find server with least load that can access a path closest to requested path
+//     if (best_server == NULL) {
+//         for (int i = 0; i < nm->storage_server_count; i++) {
+//             StorageServer* ss = nm->storage_servers[i];
+//             if (!ss->active) continue;
+            
+//             // Check if this server can handle the new path
+//             for (int j = 0; j < ss->path_count; j++) {
+//                 TreeNode *tmp = lru_cache_get(cache, path);
+//                 if(tmp == NULL) {
+//                     tmp = find_node(nm->root, path);
+//                     if(tmp != NULL)
+//                         lru_cache_put(cache, path, tmp);
+//                 }
+//                 if (is_parent_of_path(tmp, path)) {
+//                     if (ss->current_load < min_load) {
+//                         min_load = ss->current_load;
+//                         best_server = ss;
+//                     }
+//                     break;
+//                 }
+//             }
+//         }
+
+//         if(best_server == NULL) {
+//             for(int i = 0; i < nm->storage_server_count; i ++) {
+//                 StorageServer* ss = nm->storage_servers[i];
+//                 if (!ss->active) continue;
+
+//                 if (ss->current_load < min_load) {
+//                     min_load = ss->current_load;
+//                     best_server = ss;
+//                 }
+//             }
+//         }
+//     }
+//     return best_server;
+// }
+
 
 char get_first_non_space(const char* str) {
     if (str == NULL) return '\0';
@@ -1889,7 +1999,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
                 p_request.server_associated->processing_requests[load] = p_request;
 
                 char* path = (char*)malloc(sizeof(char) * MAX_PATH_LENGTH);
-                sprintf(path, "replica_%d", existing_node->storage_servers[1].sid_of_backup);
+                sprintf(path, "replica_%d/", existing_node->storage_servers[1].sid_of_backup);
 
                 json_object_object_add(response, "ip", json_object_new_string(nm->storage_servers[existing_node->storage_servers[1].sid - 1]->ip));
                 json_object_object_add(response, "client_port", json_object_new_int(nm->storage_servers[existing_node->storage_servers[1].sid - 1]->client_port));
@@ -1943,7 +2053,7 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
         Request p_request;
         p_request.client_associated = cl;
 
-        if(existing_node->storage_servers[0].sid == -1)
+        if(existing_node->storage_servers[0].sid != -1)
             p_request.server_associated = nm->storage_servers[existing_node->storage_servers[0].sid - 1];
         else
             p_request.server_associated = nm->storage_servers[existing_node->storage_servers[1].sid - 1];
@@ -2201,6 +2311,15 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
         const char* path1 = json_object_get_string(path_obj1);
         const char* path2 = json_object_get_string(path_obj2);
 
+        size_t path_len = strlen(path2);
+        int is_directory = 0;
+       
+        // Check if path ends with '/'
+        if (path_len > 0 && path2[path_len - 1] == '/') {
+            is_directory = 1;
+            path2[path_len - 1] == '\0';
+        }
+
         // Handle path creation
         // TreeNode* existing_node = find_node(nm->root, path);
         // int source_server = find_storage_server_with_path(path1);
@@ -2229,9 +2348,10 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
             return -1;
         }
 
-        int dnode = (dest_node->storage_servers[0].sid == -1) ? (dest_node->storage_servers[0].sid - 1) : (dest_node->storage_servers[1].sid - 1);
-        int snode = (source_node->storage_servers[0].sid == -1) ? (source_node->storage_servers[0].sid - 1) : (source_node->storage_servers[1].sid - 1);
+        int dnode = (dest_node->storage_servers[0].sid != -1) ? (dest_node->storage_servers[0].sid - 1) : (dest_node->storage_servers[1].sid - 1);
+        int snode = (source_node->storage_servers[0].sid != -1) ? (source_node->storage_servers[0].sid - 1) : (source_node->storage_servers[1].sid - 1);
 
+        
         Request p_request;
         p_request.client_associated = cl;
         p_request.server_associated = nm->storage_servers[dnode];
@@ -2263,22 +2383,30 @@ int handle_client_request(Client *cl, int client_socket, json_object *request) {
         fprintf(stderr, "hello\n");
 
         send_message(nm->storage_servers[dnode]->sock, request);
-        json_object_put(request);
+        // json_object_put(request);       
+
+        fprintf(stderr, "hello2\n");
+        // size_t path_len = strlen(path2);
+        // int is_directory = 0;
        
-        size_t path_len = strlen(path2);
-        int is_directory = 0;
-       
-        // Check if path ends with '/'
-        if (path_len > 0 && path2[path_len - 1] == '/') {
-            is_directory = 1;
-        }
+        // // Check if path ends with '/'
+        // if (path_len > 0 && path2[path_len - 1] == '/') {
+        //     is_directory = 1;
+        //     path2[path_len - 1] == '\0';
+        // }
+
+        fprintf(stderr, "hello3\n");
 
         StorageServer* ss = nm->storage_servers[dnode];
         if(ss->backup1 || ss->backup2){
-            strcpy(ss->pending_backup_paths[ss->pending_backup_cnt], path1);
+            ss->pending_backup_paths[ss->pending_backup_cnt] = (char*)malloc(sizeof(char) * MAX_PATH_LENGTH);
+            strcpy(ss->pending_backup_paths[ss->pending_backup_cnt], path2);
             ss->types_backup_paths[ss->pending_backup_cnt] = is_directory;
             ss->pending_backup_cnt++;
         }
+
+        fprintf(stderr, "hello4\n");
+
     }else if(strcmp(operation, "list_all") == 0) {
         json_object* paths_array = json_object_new_array();
         build_path_list(nm->root, "", paths_array);

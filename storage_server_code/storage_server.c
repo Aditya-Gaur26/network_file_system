@@ -303,7 +303,7 @@ int main(int argc, char* argv[]) {
                     send_naming_work_to_ns("naming_server_related","success",error,request_id,client_id,"create_empty",path,ssid);
 
                 }
-                else if(res == -1){
+                else{
                     send_naming_work_to_ns("naming_server_related","failure",error,request_id,client_id,"create_empty",path,ssid);
 
                 }
@@ -2627,7 +2627,7 @@ int backup_files_from_storage_server(char *storage_ip, int storage_port, json_ob
         
         // Construct destination path
         char full_dest_path[512];
-        snprintf(full_dest_path, sizeof(full_dest_path), "%s/%s", parent_directory, relative_path);
+        snprintf(full_dest_path, sizeof(full_dest_path), "%s%s", parent_directory, relative_path);
         printf("%s\n",full_dest_path);
         if (strcmp(type, "directory") == 0) {
             // If it's a directory, just ensure it exists

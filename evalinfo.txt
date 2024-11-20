@@ -1,0 +1,3 @@
+1) for direcctories user needs to send slash at the end while copying
+2) nm server file - tcode5.c
+3) i have removed exit from whie (1) infinite loop in storage server whenever response is NULL ... it is just for testing and actual code will have it. 

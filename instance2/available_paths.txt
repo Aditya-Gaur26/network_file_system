@@ -1,4 +1,5 @@
-c2/
+c4/
 extrafile.txt
-c2/xyz.txt/
-c2/mnz.txt
+c3
+c4/sita2.txt
+c4/sita.txt

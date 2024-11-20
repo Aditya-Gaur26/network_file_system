@@ -1708,7 +1708,10 @@ int main(int argc,char* argv[])
                     if (strcmp(choice, "String") == 0 || strcmp(choice, "string") == 0)
                     {
                         printf("Enter data\n");
-                        scanf("%s", data);
+                        getchar();
+                        char data2[10000];
+                        fgets(data2, sizeof(data2), stdin);
+                        strcpy(data,data2);
                     }
                     else if (strcmp(choice, "File") == 0 || strcmp(choice, "file") == 0)
                     {
