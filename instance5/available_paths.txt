@@ -1,0 +1,6 @@
+dir_psjio/
+dir_psjio/dir_kgabk/
+dir_psjio/dir_kgabk/dir_jtngu/
+dir_psjio/dir_kgabk/dir_jtngu/dir_sptuh/
+dir_psjio/dir_kgabk/dir_jtngu/dir_sptuh/file_ytw.txt
+dir_psjio/dir_kgabk/dir_jtngu/dir_sptuh/file_nda.txt

@@ -1,2 +1,8 @@
-hello2/
-hello2/mnz.txt
+dir_vhfih/
+dir_vhfih/dir_lhkzx/
+dir_vhfih/dir_lhkzx/dir_ctpcj/
+dir_vhfih/dir_lhkzx/dir_ctpcj/dir_hfccx/
+dir_vhfih/dir_lhkzx/dir_ctpcj/dir_apsck/
+dir_vhfih/dir_lhkzx/dir_ctpcj/dir_hfccx/here.txt
+dir_vhfih/dir_lhkzx/dir_ctpcj/dir_apsck/file_hwa.txt
+dir_vhfih/dir_lhkzx/dir_ctpcj/dir_apsck/file_rkn.txt

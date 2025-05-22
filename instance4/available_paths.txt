@@ -1,1 +1,9 @@
-myfile/
+dir_psjio/
+dir_psjio/dir_ctyuy/
+dir_psjio/dir_ctyuy/dir_bqays/
+dir_psjio/dir_ctyuy/dir_bqays/dir_hlxuh/
+dir_psjio/dir_ctyuy/dir_bqays/dir_adecw/
+dir_psjio/dir_ctyuy/dir_bqays/dir_hlxuh/file_rwf.txt
+dir_psjio/dir_ctyuy/dir_bqays/dir_hlxuh/file_xmu.txt
+dir_psjio/dir_ctyuy/dir_bqays/dir_hlxuh/file_zsb.txt
+dir_psjio/dir_ctyuy/dir_bqays/dir_adecw/file_qdh.txt

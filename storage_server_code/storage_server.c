@@ -21,7 +21,7 @@
 #define MAX_PATHS 1000
 #define MAX_PATH_LENGTH 256
 #define BUFFER_SIZE 1024
-#define MAX_CLIENTS 20
+#define MAX_CLIENTS 50
 #define BASE_DIR "myserver/"
 #define INVALID_PATH 10
 #define MAX_READ 4096
@@ -521,11 +521,11 @@ int main(int argc, char* argv[]) {
                     strcpy(error,"unable to copy from storage server");
                 }
                 if(response_code == 1){
-                    send_naming_work_to_ns("naming_server_related","success",error,request_id,client_id,"copy",path,storage_ss_id);
+                    send_naming_work_to_ns("naming_server_related","success",error,request_id,client_id,"copy1",path,storage_ss_id);
 
                 }
                 else {
-                    send_naming_work_to_ns("naming_server_related","failure",error,request_id,client_id,"copy",path,storage_ss_id);
+                    send_naming_work_to_ns("naming_server_related","failure",error,request_id,client_id,"copy1",path,storage_ss_id);
                 }
             
                 // // json_object_put(path_object);
@@ -2294,8 +2294,8 @@ int copy_replica_from_another_storage_server(char*storage_ip,int storage_port,ch
         // Construct source and destination paths
         char full_source_path[512];
         char full_dest_path[512];
-        snprintf(full_source_path, sizeof(full_source_path), "%s/%s", path, relative_path);
-        snprintf(full_dest_path, sizeof(full_dest_path), "%s/%s", destination_path, relative_path);
+        snprintf(full_source_path, sizeof(full_source_path), "%s%s", new_path, relative_path);
+        snprintf(full_dest_path, sizeof(full_dest_path), "%s%s", destination_path, relative_path);
         printf("%s\n",full_dest_path);
         if (strcmp(type, "directory") == 0) {
             // If it's a directory, just ensure it exists
@@ -2318,7 +2318,7 @@ int copy_replica_from_another_storage_server(char*storage_ip,int storage_port,ch
         
         // Send read request for this file
         json_object* read_request = json_object_new_object();
-        json_object_object_add(read_request, "request_code", json_object_new_string("read"));
+        json_object_object_add(read_request, "request_code", json_object_new_string("read2"));
         json_object_object_add(read_request, "path", json_object_new_string(full_source_path));
         json_object_object_add(read_request, "client_id", json_object_new_int(-1));
         
@@ -2604,9 +2604,16 @@ int backup_files_from_storage_server(char *storage_ip, int storage_port, json_ob
     }
     printf("2\n");
     
+    int retries = 0;
     // Test connection to server
-    if (connect(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        printf("%s %d\nhello",storage_ip,storage_port);
+    while(connect(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0 && retries < 50) {
+       
+        // printf("%s %d hello\n",storage_ip,storage_port);
+        // close(sock_fd);
+        // return -1;
+        sleep(0.2);
+    }
+    if(retries >= 50){
         close(sock_fd);
         return -1;
     }

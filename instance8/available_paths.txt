@@ -1,0 +1,5 @@
+gravity_falls/
+gravity_falls/gravity_subdir/
+gravity_falls/gravity_subdir2/
+gravity_falls/gravity_subdir/intro.txt
+gravity_falls/gravity_subdir/so-good.webp
